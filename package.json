@@ -1,0 +1,22 @@
+{
+  "name": "recruiting-os",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Evidence-first recruiting intelligence for fragmented campus club recruiting.",
+  "type": "commonjs",
+  "scripts": {
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/tests/*.test.js",
+    "start": "node --experimental-sqlite dist/src/server.js",
+    "dev": "npm run build && npm start",
+    "demo:180dc": "node --experimental-sqlite dist/scripts/demo-180dc.js",
+    "check": "npm test"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.0"
+  }
+}
