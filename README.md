@@ -15,6 +15,7 @@ This repository contains production-oriented application code, but a deployment 
 - Workers for bounded URL/screenshot ingestion and durable recurring Gmail, GroupMe, Instagram, and LinkedIn sync. Provider calls use host allowlists, timeouts, retry/backoff, and circuit breaking; public URL fetches revalidate DNS and every redirect against SSRF policy.
 - Accessible student UI and evidence/admin controls served as same-origin assets. Student DTOs omit internal tenant and evidence data.
 - Structured redacted logs, request IDs, protected Prometheus-format API/queue metrics, health/readiness probes, immutable container deployment templates, and backup/recovery runbooks.
+- Versioned consent for private connectors/screenshots and an executable retention job that redacts expired private evidence and terminal job payloads.
 
 The module direction is `domain → application ports → infrastructure adapters → bootstraps`. Domain and resolver code do not depend on Fastify, SQLite, Postgres, or provider SDKs.
 

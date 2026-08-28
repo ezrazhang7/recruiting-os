@@ -67,6 +67,14 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     if (value.CREDENTIAL_MASTER_KEY === Buffer.alloc(32).toString('base64')) {
       throw new Error('Production CREDENTIAL_MASTER_KEY must be changed');
     }
+    const allowedOrigins = value.ALLOWED_ORIGINS.split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean);
+    if (
+      !allowedOrigins.length ||
+      allowedOrigins.some((origin) => new URL(origin).protocol !== 'https:')
+    )
+      throw new Error('Production requires explicit HTTPS ALLOWED_ORIGINS');
   }
   return {
     environment: value.NODE_ENV,

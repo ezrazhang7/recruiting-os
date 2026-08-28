@@ -12,6 +12,21 @@ import { GroupMeConnector } from '../connectors/groupme';
 import { InstagramConnector } from '../connectors/instagram';
 import { LinkedInConnector } from '../connectors/linkedin';
 import type { SourceItem } from '../domain/models';
+import { ProviderOAuthService } from '../infrastructure/auth/provider-oauth-service';
+import { RefreshingCredentialService } from '../application/connectors/refreshing-credential-service';
+import {
+  ConnectorSyncScheduler,
+  type ConnectorSyncPayload,
+} from '../application/connectors/connector-sync-scheduler';
+import { z } from 'zod';
+
+const connectorSyncPayloadSchema = z.object({
+  provider: z.enum(['gmail', 'groupme', 'instagram', 'linkedin']),
+  userId: z.string().min(1),
+  organizationId: z.string().min(1),
+  scope: z.string().optional(),
+  recurring: z.boolean().optional(),
+});
 
 async function main() {
   const config = loadConfig();
@@ -25,6 +40,16 @@ async function main() {
     dependencies.repository,
     new OpenAIExtractor(config.openai.apiKey, config.openai.model),
     web,
+  );
+  const credentials = new RefreshingCredentialService(
+    dependencies.credentialVault,
+    new ProviderOAuthService(config.providers),
+    dependencies.auditLog,
+  );
+  const connectorScheduler = new ConnectorSyncScheduler(
+    dependencies.queue,
+    dependencies.credentialVault,
+    config.limits.connectorSyncIntervalSeconds,
   );
   let stopping = false;
   const stop = () => {
@@ -57,17 +82,12 @@ async function main() {
         source.tenantId = job.tenantId;
         await ingestion.ingest(source, { followLinks: true, maxDepth: 2 });
       } else if (job.type === 'connector.sync') {
-        const payload = job.payload as {
-          provider: 'gmail' | 'groupme' | 'instagram' | 'linkedin';
-          userId: string;
-          organizationId: string;
-          scope?: string;
-          recurring?: boolean;
-        };
-        const credential = await dependencies.credentialVault.get(
+        const payload: ConnectorSyncPayload = connectorSyncPayloadSchema.parse(job.payload);
+        const credential = await credentials.getValid(
           job.tenantId,
           payload.userId,
           payload.provider,
+          job.id,
         );
         if (!credential) throw new Error(`${payload.provider} is not connected`);
         const organization = await dependencies.repository.getOrganization(
@@ -118,21 +138,7 @@ async function main() {
           source.tenantId = job.tenantId;
           await ingestion.ingest(source, { followLinks: true, maxDepth: 2 });
         }
-        if (payload.recurring !== false) {
-          const availableAt = new Date(
-            Date.now() + config.limits.connectorSyncIntervalSeconds * 1000,
-          ).toISOString();
-          const scheduleSlot = Math.floor(
-            new Date(availableAt).getTime() / (config.limits.connectorSyncIntervalSeconds * 1000),
-          );
-          await dependencies.queue.enqueue({
-            tenantId: job.tenantId,
-            type: 'connector.sync',
-            idempotencyKey: `scheduled:${payload.provider}:${payload.userId}:${payload.organizationId}:${payload.scope ?? ''}:${scheduleSlot}`,
-            payload: { ...payload, recurring: true },
-            availableAt,
-          });
-        }
+        await connectorScheduler.scheduleAfter(job, payload);
       } else throw new Error(`Unsupported job type: ${job.type}`);
       await dependencies.queue.complete(job);
       logger.info({ jobId: job.id, type: job.type, tenantId: job.tenantId }, 'job completed');

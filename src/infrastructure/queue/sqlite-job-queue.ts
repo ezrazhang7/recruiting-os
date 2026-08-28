@@ -1,4 +1,4 @@
-import type { EnqueueJob, JobQueue } from '../../application/ports/job-queue';
+import type { CancelPendingJobs, EnqueueJob, JobQueue } from '../../application/ports/job-queue';
 import type { Job } from '../../domain/models';
 import { nowIso, parseJsonSafe, stableId } from '../../lib/util';
 import type { Store } from '../../store';
@@ -15,7 +15,12 @@ export class SqliteJobQueue implements JobQueue {
         .prepare(
           `insert into jobs(
         id,tenant_id,type,idempotency_key,payload,status,priority,max_attempts,available_at,created_at,updated_at
-      ) values(?,?,?,?,?,'queued',?,?,?,?,?) on conflict(tenant_id,type,idempotency_key) do nothing`,
+      ) values(?,?,?,?,?,'queued',?,?,?,?,?)
+      on conflict(tenant_id,type,idempotency_key) do update set
+        payload=excluded.payload,status='queued',priority=excluded.priority,
+        attempt_count=0,max_attempts=excluded.max_attempts,available_at=excluded.available_at,
+        leased_until=null,leased_by=null,last_error=null,updated_at=excluded.updated_at
+      where jobs.status='cancelled'`,
         )
         .run(
           id,
@@ -35,6 +40,32 @@ export class SqliteJobQueue implements JobQueue {
       unknown
     >;
     return this.map(row);
+  }
+
+  async cancelPending(input: CancelPendingJobs): Promise<number> {
+    const candidates = this.store.db
+      .prepare(
+        `select id,payload from jobs where tenant_id=? and type=?
+         and status in ('queued','retryable_failed')`,
+      )
+      .all(input.tenantId, input.type) as Array<{ id: string; payload: string }>;
+    const ids = candidates
+      .filter((candidate) => {
+        const payload = parseJsonSafe<Record<string, unknown>>(candidate.payload, {});
+        return Object.entries(input.payload).every(([key, value]) => payload[key] === value);
+      })
+      .map((candidate) => candidate.id);
+    if (!ids.length) return 0;
+    return this.store.transaction(async () => {
+      const statement = this.store.db.prepare(
+        `update jobs set status='cancelled',leased_by=null,leased_until=null,
+         last_error='Cancelled by connector revocation',updated_at=? where id=?
+         and status in ('queued','retryable_failed')`,
+      );
+      let cancelled = 0;
+      for (const id of ids) cancelled += Number(statement.run(nowIso(), id).changes);
+      return cancelled;
+    });
   }
 
   async leaseNext(workerId: string, leaseSeconds = 60): Promise<Job | undefined> {
@@ -115,6 +146,7 @@ export class SqliteJobQueue implements JobQueue {
       running: counts.get('running') ?? 0,
       retryableFailed: counts.get('retryable_failed') ?? 0,
       deadLetter: counts.get('dead_letter') ?? 0,
+      cancelled: counts.get('cancelled') ?? 0,
       oldestReadyAgeSeconds: oldest?.available_at
         ? Math.max(0, (Date.now() - new Date(oldest.available_at).getTime()) / 1000)
         : 0,

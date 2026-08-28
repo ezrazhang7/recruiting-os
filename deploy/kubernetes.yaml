@@ -94,6 +94,42 @@ spec:
   selector: { app: recruiting-os, component: api }
   ports: [{ name: http, port: 80, targetPort: http }]
 ---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: recruiting-os-maintenance
+spec:
+  schedule: '23 3 * * *'
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 600
+      template:
+        metadata:
+          labels: { app: recruiting-os, component: maintenance }
+        spec:
+          restartPolicy: Never
+          securityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+          containers:
+            - name: maintenance
+              image: ghcr.io/ezrazhang7/recruiting-os:RELEASE_SHA
+              command: ['node', 'dist/src/infrastructure/database/postgres/maintenance.js']
+              envFrom:
+                - configMapRef: { name: recruiting-os }
+                - secretRef: { name: recruiting-os-secrets }
+              resources:
+                requests: { cpu: 25m, memory: 64Mi }
+                limits: { cpu: 250m, memory: 256Mi }
+              securityContext:
+                {
+                  allowPrivilegeEscalation: false,
+                  readOnlyRootFilesystem: true,
+                  capabilities: { drop: ['ALL'] },
+                }
+---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:

@@ -26,6 +26,7 @@ export const screenshotSchema = z
     note: z.string().max(2_000).optional(),
     url: z.string().url().optional(),
     publishedAt: z.string().datetime({ offset: true }).optional(),
+    consentToProcess: z.literal(true),
   })
   .strict();
 export const developmentLoginSchema = z

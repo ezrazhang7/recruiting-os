@@ -150,7 +150,8 @@ export interface AuthPrincipal {
   sessionId: string;
 }
 
-export type JobStatus = 'queued' | 'running' | 'succeeded' | 'retryable_failed' | 'dead_letter';
+export type JobStatus =
+  'queued' | 'running' | 'succeeded' | 'retryable_failed' | 'dead_letter' | 'cancelled';
 export interface Job<T = Record<string, unknown>> {
   id: string;
   tenantId: string;

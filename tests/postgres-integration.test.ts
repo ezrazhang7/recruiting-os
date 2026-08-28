@@ -4,6 +4,8 @@ import { Pool } from 'pg';
 import { migrate } from '../src/infrastructure/database/postgres/migrate';
 import { PostgresStore } from '../src/infrastructure/database/postgres/postgres-store';
 import { PostgresRateLimiter } from '../src/infrastructure/rate-limit/postgres-rate-limiter';
+import { PostgresJobQueue } from '../src/infrastructure/queue/postgres-job-queue';
+import { runMaintenance } from '../src/infrastructure/database/postgres/maintenance';
 
 const adminUrl = process.env.TEST_DATABASE_URL;
 
@@ -66,6 +68,70 @@ test(
         client.release();
         await appPool.end();
       }
+
+      const queue = new PostgresJobQueue(url.toString(), 1);
+      let cancelledJobId = '';
+      try {
+        const queued = await queue.enqueue({
+          tenantId: 'tenant-a',
+          type: 'connector.sync',
+          idempotencyKey: `cancel-${crypto.randomUUID()}`,
+          payload: { provider: 'gmail', userId: 'user-a', organizationId: 'shared' },
+        });
+        cancelledJobId = queued.id;
+        assert.equal(
+          await queue.cancelPending({
+            tenantId: 'tenant-a',
+            type: 'connector.sync',
+            payload: { provider: 'gmail', userId: 'user-a' },
+          }),
+          1,
+        );
+        assert.ok((await queue.stats('tenant-a')).cancelled >= 1);
+      } finally {
+        await queue.close();
+      }
+
+      const privateSource = await store.stageSource(
+        {
+          id: `gmail-${crypto.randomUUID()}`,
+          tenantId: 'tenant-a',
+          organizationId: 'shared',
+          sourceType: 'gmail',
+          externalId: `message-${crypto.randomUUID()}`,
+          rawText: 'private recruiting message',
+          media: [{ type: 'image', base64: 'private-image' }],
+          fetchedAt: new Date(Date.now() - 91 * 86_400_000).toISOString(),
+          metadata: { privateHeader: 'secret' },
+        },
+        'tenant-a',
+      );
+      await admin.query("update jobs set updated_at=now()-interval '31 days' where id=$1", [
+        cancelledJobId,
+      ]);
+
+      const maintenance = await runMaintenance(url.toString());
+      assert.ok(maintenance.privateSourceVersions >= 1);
+      assert.ok(maintenance.failedJobPayloads >= 1);
+      const redactedSource = (
+        await admin.query<{
+          raw_text: string;
+          media: unknown;
+          metadata: { retentionRedacted?: boolean };
+        }>('select raw_text,media,metadata from source_versions where id=$1', [
+          privateSource.versionId,
+        ])
+      ).rows[0];
+      assert.equal(redactedSource?.raw_text, '');
+      assert.deepEqual(redactedSource?.media, []);
+      assert.equal(redactedSource?.metadata.retentionRedacted, true);
+      const redactedJob = (
+        await admin.query<{ payload: { retentionRedacted?: boolean } }>(
+          'select payload from jobs where id=$1',
+          [cancelledJobId],
+        )
+      ).rows[0];
+      assert.equal(redactedJob?.payload.retentionRedacted, true);
     } finally {
       await store.close();
       await admin.end();

@@ -1,5 +1,5 @@
 import { Pool, type QueryResultRow } from 'pg';
-import type { EnqueueJob, JobQueue } from '../../application/ports/job-queue';
+import type { CancelPendingJobs, EnqueueJob, JobQueue } from '../../application/ports/job-queue';
 import type { Job } from '../../domain/models';
 import { stableId } from '../../lib/util';
 
@@ -21,7 +21,12 @@ export class PostgresJobQueue implements JobQueue {
       await client.query(`select set_config('app.tenant_id',$1,true)`, [input.tenantId]);
       await client.query(
         `insert into jobs(id,tenant_id,type,idempotency_key,payload,status,priority,max_attempts,available_at)
-        values($1,$2,$3,$4,$5,'queued',$6,$7,$8) on conflict(tenant_id,type,idempotency_key) do nothing`,
+        values($1,$2,$3,$4,$5,'queued',$6,$7,$8)
+        on conflict(tenant_id,type,idempotency_key) do update set
+          payload=excluded.payload,status='queued',priority=excluded.priority,
+          attempt_count=0,max_attempts=excluded.max_attempts,available_at=excluded.available_at,
+          leased_until=null,leased_by=null,last_error=null,updated_at=now()
+        where jobs.status='cancelled'`,
         [
           id,
           input.tenantId,
@@ -36,6 +41,27 @@ export class PostgresJobQueue implements JobQueue {
       const row = (await client.query('select * from jobs where id=$1', [id])).rows[0];
       await client.query('commit');
       return this.map(row);
+    } catch (error) {
+      await client.query('rollback');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  async cancelPending(input: CancelPendingJobs): Promise<number> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('begin');
+      await client.query(`select set_config('app.tenant_id',$1,true)`, [input.tenantId]);
+      const result = await client.query(
+        `update jobs set status='cancelled',leased_by=null,leased_until=null,
+           last_error='Cancelled by connector revocation',updated_at=now()
+         where tenant_id=$1 and type=$2 and status in ('queued','retryable_failed')
+           and payload @> $3::jsonb`,
+        [input.tenantId, input.type, JSON.stringify(input.payload)],
+      );
+      await client.query('commit');
+      return result.rowCount ?? 0;
     } catch (error) {
       await client.query('rollback');
       throw error;
@@ -85,6 +111,7 @@ export class PostgresJobQueue implements JobQueue {
         running: counts.get('running') ?? 0,
         retryableFailed: counts.get('retryable_failed') ?? 0,
         deadLetter: counts.get('dead_letter') ?? 0,
+        cancelled: counts.get('cancelled') ?? 0,
         oldestReadyAgeSeconds: Math.max(0, Number(oldest?.age ?? 0)),
       };
     } catch (error) {

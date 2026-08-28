@@ -58,7 +58,7 @@ export class ProviderOAuthService {
     provider: OAuthProvider,
     userId: string,
     tenantId: string,
-    returnTo = '/settings/connectors',
+    returnTo = '/?connectors=1',
   ): { url: string; state: ProviderOAuthState } {
     const definition = this.definition(provider);
     const state: ProviderOAuthState = {
@@ -67,7 +67,7 @@ export class ProviderOAuthService {
       verifier: randomBytes(48).toString('base64url'),
       userId,
       tenantId,
-      returnTo: returnTo.startsWith('/') ? returnTo : '/settings/connectors',
+      returnTo: returnTo.startsWith('/') ? returnTo : '/?connectors=1',
     };
     const challenge = createHash('sha256').update(state.verifier).digest('base64url');
     const url = new URL(definition.authorizationEndpoint);
@@ -97,26 +97,7 @@ export class ProviderOAuthService {
       code_verifier: state.verifier,
     });
     if (definition.clientSecret) body.set('client_secret', definition.clientSecret);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10_000);
-    let response: Response;
-    try {
-      response = await this.transport(definition.tokenEndpoint, {
-        method: 'POST',
-        headers: { 'content-type': 'application/x-www-form-urlencoded' },
-        body,
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-    if (!response.ok) throw new Error(`Provider token exchange failed: ${response.status}`);
-    const token = (await response.json()) as {
-      access_token?: string;
-      refresh_token?: string;
-      expires_in?: number;
-      scope?: string;
-    };
+    const token = await this.requestToken(definition.tokenEndpoint, body);
     if (!token.access_token) throw new Error('Provider did not return an access token');
     return {
       accessToken: token.access_token,
@@ -127,9 +108,64 @@ export class ProviderOAuthService {
       scopes: token.scope ? token.scope.split(/[ ,]+/).filter(Boolean) : definition.scopes,
     };
   }
+  async refresh(
+    provider: OAuthProvider,
+    credential: ProviderCredential,
+  ): Promise<ProviderCredential> {
+    if (!credential.refreshToken)
+      throw new Error(`${provider} credential expired and cannot be refreshed`);
+    const definition = this.definition(provider);
+    const body = new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: credential.refreshToken,
+      client_id: definition.clientId,
+    });
+    if (definition.clientSecret) body.set('client_secret', definition.clientSecret);
+    const token = await this.requestToken(definition.tokenEndpoint, body);
+    if (!token.access_token) throw new Error('Provider refresh did not return an access token');
+    return {
+      accessToken: token.access_token,
+      refreshToken: token.refresh_token ?? credential.refreshToken,
+      expiresAt: token.expires_in
+        ? new Date(Date.now() + token.expires_in * 1000).toISOString()
+        : credential.expiresAt,
+      scopes: token.scope ? token.scope.split(/[ ,]+/).filter(Boolean) : credential.scopes,
+      metadata: credential.metadata,
+    };
+  }
   configured(provider: OAuthProvider): boolean {
     const value = this.configuration[provider];
     return Boolean(value?.clientId && value.redirectUri);
+  }
+  private async requestToken(
+    tokenEndpoint: string,
+    body: URLSearchParams,
+  ): Promise<{
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+    scope?: string;
+  }> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    let response: Response;
+    try {
+      response = await this.transport(tokenEndpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!response.ok) throw new Error(`Provider token exchange failed: ${response.status}`);
+    return (await response.json()) as {
+      access_token?: string;
+      refresh_token?: string;
+      expires_in?: number;
+      scope?: string;
+    };
   }
   private definition(provider: OAuthProvider): ProviderDefinition {
     const value = this.configuration[provider];

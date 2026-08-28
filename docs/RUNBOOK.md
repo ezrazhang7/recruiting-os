@@ -26,4 +26,8 @@ For a restore: disable API writes and workers, create a fresh database, run `BAC
 
 Rotate the session secret and credential encryption key through the secret manager. Key rotation is staged: deploy support for the new key version, re-encrypt credentials, verify counts, then retire the previous key. Revoke a connector through the API and at the provider. Audit evidence reads, organization changes, connector lifecycle actions, and ingestion queue actions.
 
-Delete expired sessions, rate-limit buckets, old audit events per policy, and revoked connector credentials with a scheduled maintenance job. Investigate all SSRF blocks and repeated cross-tenant authorization failures.
+The Kubernetes maintenance CronJob runs `npm run maintenance` daily. Alert when it misses two runs
+or fails. It redacts raw private source versions after 90 days and terminal job payloads after 30
+days, clears expired sessions/rate-limit buckets, deletes credentials revoked for 30 days, and
+retains audit events for 365 days. Investigate all SSRF blocks and repeated cross-tenant
+authorization failures.

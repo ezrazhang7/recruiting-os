@@ -92,7 +92,7 @@ create table if not exists audit_events (
 create table if not exists jobs (
   id text primary key, tenant_id text not null references tenants(id) on delete cascade,
   type text not null, idempotency_key text not null, payload text not null,
-  status text not null check(status in ('queued','running','succeeded','retryable_failed','dead_letter')),
+  status text not null check(status in ('queued','running','succeeded','retryable_failed','dead_letter','cancelled')),
   priority integer not null default 100, attempt_count integer not null default 0,
   max_attempts integer not null default 5, available_at text not null,
   leased_until text, leased_by text, last_error text, created_at text not null, updated_at text not null,

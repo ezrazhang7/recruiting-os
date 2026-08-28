@@ -7,6 +7,9 @@ import { SqliteAuthRepository } from '../src/infrastructure/auth/sqlite-auth-rep
 import { InMemoryRateLimiter } from '../src/infrastructure/rate-limit/in-memory-rate-limiter';
 import { SqliteJobQueue } from '../src/infrastructure/queue/sqlite-job-queue';
 import { Store } from '../src/store';
+import { EncryptedCredentialVault } from '../src/infrastructure/credentials/encrypted-credential-vault';
+import { SqliteCredentialRepository } from '../src/infrastructure/credentials/sqlite-credential-repository';
+import { ProviderOAuthService } from '../src/infrastructure/auth/provider-oauth-service';
 
 async function fixture() {
   const config = loadConfig({
@@ -20,6 +23,11 @@ async function fixture() {
   const store = new Store(':memory:', 'unc');
   const auth = new SqliteAuthRepository(store);
   const queue = new SqliteJobQueue(store);
+  const credentialVault = new EncryptedCredentialVault(
+    new SqliteCredentialRepository(store),
+    config.auth.credentialMasterKey,
+    config.auth.credentialKeyVersion,
+  );
   const sessions = new SessionService(auth, 3600);
   const app = await buildApp({
     config,
@@ -27,8 +35,16 @@ async function fixture() {
     queue,
     sessionService: sessions,
     rateLimiter: new InMemoryRateLimiter(),
+    credentialVault,
+    providerOAuth: new ProviderOAuthService({
+      gmail: {
+        clientId: 'test-client',
+        clientSecret: 'test-secret',
+        redirectUri: 'https://app.example/api/connectors/gmail/callback',
+      },
+    }),
   });
-  return { app, store };
+  return { app, store, credentialVault };
 }
 
 async function login(app: Awaited<ReturnType<typeof buildApp>>) {
@@ -45,6 +61,27 @@ async function login(app: Awaited<ReturnType<typeof buildApp>>) {
   return { cookie, csrf };
 }
 
+test('local same-origin browser requests are accepted while foreign origins are rejected', async () => {
+  const { app, store } = await fixture();
+  const accepted = await app.inject({
+    method: 'POST',
+    url: '/auth/development',
+    headers: { origin: 'http://127.0.0.1:4318' },
+    payload: { email: 'browser@unc.edu', displayName: 'Browser' },
+  });
+  assert.equal(accepted.statusCode, 200, accepted.body);
+  const rejected = await app.inject({
+    method: 'POST',
+    url: '/auth/development',
+    headers: { origin: 'https://evil.example' },
+    payload: { email: 'browser@unc.edu', displayName: 'Browser' },
+  });
+  assert.equal(rejected.statusCode, 403);
+  assert.equal(rejected.json().error.code, 'ORIGIN_NOT_ALLOWED');
+  await app.close();
+  await store.close();
+});
+
 test('protected API routes reject anonymous requests', async () => {
   const { app, store } = await fixture();
   const response = await app.inject({ url: '/api/dashboard' });
@@ -59,6 +96,7 @@ test('student interface and same-origin assets are publicly renderable', async (
   const page = await app.inject({ url: '/' });
   assert.equal(page.statusCode, 200);
   assert.match(page.body, /Find the right club before the deadline/);
+  assert.match(page.body, /Private raw messages and screenshots are retained for up to 90 days/);
   assert.match(page.headers['content-security-policy'] ?? '', /script-src 'self'/);
   assert.equal((await app.inject({ url: '/assets/app.js' })).statusCode, 200);
   assert.equal((await app.inject({ url: '/assets/app.css' })).statusCode, 200);
@@ -131,6 +169,7 @@ test('screenshots are rejected when bytes do not match the declared MIME type', 
       organizationId: 'club',
       base64: Buffer.from('not an image').toString('base64'),
       mimeType: 'image/png',
+      consentToProcess: true,
     },
   });
   assert.equal(response.statusCode, 422);
@@ -167,6 +206,103 @@ test('organization editors cannot read another organization evidence', async () 
     payload: { id: 'org-c', name: 'C', school: 'UNC' },
   });
   assert.equal(mutate.statusCode, 403);
+  await app.close();
+  await store.close();
+});
+
+test('connector sync requires a credential and revocation cancels pending schedules', async () => {
+  const { app, store, credentialVault } = await fixture();
+  const { cookie, csrf } = await login(app);
+  await app.inject({
+    method: 'POST',
+    url: '/api/organizations',
+    headers: { cookie, 'x-csrf-token': csrf },
+    payload: { id: 'club', name: 'Club', school: 'UNC' },
+  });
+
+  const disconnected = await app.inject({
+    method: 'POST',
+    url: '/api/connectors/gmail/sync',
+    headers: { cookie, 'x-csrf-token': csrf },
+    payload: { organizationId: 'club' },
+  });
+  assert.equal(disconnected.statusCode, 409, disconnected.body);
+  assert.equal(disconnected.json().error.code, 'CONNECTOR_NOT_CONNECTED');
+
+  const user = store.db.prepare("select id from users where email='student@unc.edu'").get() as {
+    id: string;
+  };
+  await credentialVault.put('unc', user.id, 'gmail', {
+    accessToken: 'access',
+    scopes: ['gmail.readonly'],
+  });
+  const queued = await app.inject({
+    method: 'POST',
+    url: '/api/connectors/gmail/sync',
+    headers: { cookie, 'x-csrf-token': csrf },
+    payload: { organizationId: 'club' },
+  });
+  assert.equal(queued.statusCode, 202, queued.body);
+
+  const revoked = await app.inject({
+    method: 'DELETE',
+    url: '/api/connectors/gmail',
+    headers: { cookie, 'x-csrf-token': csrf },
+  });
+  assert.equal(revoked.statusCode, 200, revoked.body);
+  assert.equal(revoked.json().cancelledJobs, 1);
+  assert.equal(await credentialVault.get('unc', user.id, 'gmail'), undefined);
+  assert.equal(
+    (
+      store.db.prepare("select status from jobs where type='connector.sync'").get() as {
+        status: string;
+      }
+    ).status,
+    'cancelled',
+  );
+  await credentialVault.put('unc', user.id, 'gmail', {
+    accessToken: 'replacement-access',
+    scopes: ['gmail.readonly'],
+  });
+  const requeued = await app.inject({
+    method: 'POST',
+    url: '/api/connectors/gmail/sync',
+    headers: { cookie, 'x-csrf-token': csrf },
+    payload: { organizationId: 'club' },
+  });
+  assert.equal(requeued.statusCode, 202, requeued.body);
+  assert.equal(requeued.json().jobId, queued.json().jobId);
+  assert.equal(
+    (
+      store.db.prepare("select status from jobs where type='connector.sync'").get() as {
+        status: string;
+      }
+    ).status,
+    'queued',
+  );
+  await app.close();
+  await store.close();
+});
+
+test('connecting a private provider requires versioned explicit consent', async () => {
+  const { app, store } = await fixture();
+  const { cookie, csrf } = await login(app);
+  const denied = await app.inject({
+    method: 'POST',
+    url: '/api/connectors/gmail/connect',
+    headers: { cookie, 'x-csrf-token': csrf },
+    payload: {},
+  });
+  assert.equal(denied.statusCode, 422, denied.body);
+
+  const accepted = await app.inject({
+    method: 'POST',
+    url: '/api/connectors/gmail/connect',
+    headers: { cookie, 'x-csrf-token': csrf },
+    payload: { consentToProcess: true },
+  });
+  assert.equal(accepted.statusCode, 200, accepted.body);
+  assert.match(accepted.json().authorizationUrl, /^https:\/\/accounts\.google\.com\//);
   await app.close();
   await store.close();
 });

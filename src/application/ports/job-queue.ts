@@ -10,8 +10,15 @@ export interface EnqueueJob {
   availableAt?: string;
 }
 
+export interface CancelPendingJobs {
+  tenantId: string;
+  type: string;
+  payload: Record<string, string>;
+}
+
 export interface JobQueue {
   enqueue(input: EnqueueJob): Promise<Job>;
+  cancelPending(input: CancelPendingJobs): Promise<number>;
   leaseNext(workerId: string, leaseSeconds?: number): Promise<Job | undefined>;
   complete(job: Job): Promise<void>;
   fail(job: Job, error: unknown): Promise<void>;
@@ -20,6 +27,7 @@ export interface JobQueue {
     running: number;
     retryableFailed: number;
     deadLetter: number;
+    cancelled: number;
     oldestReadyAgeSeconds: number;
   }>;
   close(): Promise<void>;
