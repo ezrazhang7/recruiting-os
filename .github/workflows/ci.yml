@@ -61,6 +61,30 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:postgres
+      - name: Prove logical backup and restore
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          docker cp scripts/backup.sh "$POSTGRES_CONTAINER:/tmp/recruiting-backup.sh"
+          docker cp scripts/restore.sh "$POSTGRES_CONTAINER:/tmp/recruiting-restore.sh"
+          docker exec \
+            -e DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/recruiting_os \
+            -e BACKUP_FILE=/tmp/recruiting-os.dump \
+            "$POSTGRES_CONTAINER" sh /tmp/recruiting-backup.sh
+          docker exec -e PGPASSWORD=postgres "$POSTGRES_CONTAINER" \
+            createdb -U postgres recruiting_os_restore
+          docker exec \
+            -e DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/recruiting_os_restore \
+            -e BACKUP_FILE=/tmp/recruiting-os.dump \
+            -e RESTORE_CONFIRM=RESTORE_TO_EMPTY_DATABASE \
+            "$POSTGRES_CONTAINER" sh /tmp/recruiting-restore.sh
+          for table in schema_migrations tenants users memberships organizations sources source_versions claims opportunities opportunity_overrides resolver_policies connector_state credentials sessions jobs tenant_queue_state rate_limit_buckets audit_events; do
+            source_count=$(docker exec -e PGPASSWORD=postgres "$POSTGRES_CONTAINER" \
+              psql -U postgres -d recruiting_os -Atc "select count(*) from $table")
+            restored_count=$(docker exec -e PGPASSWORD=postgres "$POSTGRES_CONTAINER" \
+              psql -U postgres -d recruiting_os_restore -Atc "select count(*) from $table")
+            test "$source_count" = "$restored_count"
+          done
 
   container-scan:
     runs-on: ubuntu-latest

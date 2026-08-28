@@ -3,7 +3,7 @@
 ## Release sequence
 
 1. Build an immutable image tagged with the reviewed commit SHA and scan it for critical/high CVEs.
-2. Back up production and verify the archive with `pg_restore --list`.
+2. Back up production and verify both the archive manifest and its SHA-256 sidecar.
 3. Run `npm run migrate` as a one-off job. Migrations are forward-only in production.
 4. Deploy one API canary, verify readiness, login, dashboard, ingestion enqueue, worker completion, and metrics.
 5. Roll the API and workers. Watch error rate, p95 latency, database connections, queue age, retry rate, dead letters, and OIDC failures for 30 minutes.
@@ -43,9 +43,15 @@ container-memory metrics. Validate each rule with a synthetic failure before rel
 
 ## Backup and recovery
 
-Create encrypted daily Postgres snapshots with 35-day retention and weekly cross-region copies. Quarterly, restore the latest backup into an isolated account, run migrations, compare tenant/source/claim/job counts, exercise a student login and dashboard query, and record achieved RPO/RTO. Target RPO is 24 hours and target RTO is 4 hours.
+Create encrypted daily Postgres snapshots with 35-day retention and weekly cross-region copies. Quarterly, restore the latest backup into an isolated account, run migrations, compare tenant/source/claim/job counts, exercise a student login and dashboard query, and record achieved RPO/RTO. Target RPO is 24 hours and target RTO is 4 hours. The repository's logical dump and SHA-256 sidecar must be created only on an encrypted volume; the sidecar proves integrity, not confidentiality.
 
-For a restore: disable API writes and workers, create a fresh database, run `BACKUP_FILE=... DATABASE_URL=... scripts/restore.sh`, rotate database credentials, run smoke tests, then re-enable the API before workers. Keep the damaged database read-only until the incident review closes.
+For a restore: disable API writes and workers, create a fresh empty database, and run
+`BACKUP_FILE=... DATABASE_URL=... RESTORE_CONFIRM=RESTORE_TO_EMPTY_DATABASE scripts/restore.sh`.
+The script verifies the SHA-256 sidecar and restores in one transaction. Rotate database
+credentials, run smoke tests, then re-enable the API before workers. Keep the damaged database
+read-only until the incident review closes. CI performs the same backup/restore round trip and
+compares core table counts on every change; the quarterly managed-environment drill remains a
+release gate.
 
 ## Security operations
 
