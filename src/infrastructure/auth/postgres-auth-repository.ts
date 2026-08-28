@@ -52,6 +52,15 @@ export class PostgresAuthRepository implements AuthRepository {
         on conflict(tenant_id,user_id) do nothing`,
         [tenantId, userId, defaultRoles],
       );
+      if (defaultRoles.includes('platform_admin')) {
+        await client.query(
+          `update memberships set
+            roles=array(select distinct role from unnest(roles || $3::text[]) role),
+            updated_at=now()
+          where tenant_id=$1 and user_id=$2`,
+          [tenantId, userId, defaultRoles],
+        );
+      }
       await client.query('commit');
       return userId;
     } catch (error) {

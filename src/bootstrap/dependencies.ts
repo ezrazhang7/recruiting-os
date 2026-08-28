@@ -22,6 +22,10 @@ import { InMemoryRateLimiter } from '../infrastructure/rate-limit/in-memory-rate
 import type { PrivacyRepository } from '../application/ports/privacy-repository';
 import { PostgresPrivacyRepository } from '../infrastructure/privacy/postgres-privacy-repository';
 import { SqlitePrivacyRepository } from '../infrastructure/privacy/sqlite-privacy-repository';
+import {
+  assertPlatformAdminBootstrap,
+  assertSafePostgresRuntimeRole,
+} from '../infrastructure/database/postgres/runtime-role';
 
 export interface RuntimeDependencies {
   repository: RecruitingRepository;
@@ -31,6 +35,7 @@ export interface RuntimeDependencies {
   auditLog: AuditLog;
   rateLimiter: RateLimiter;
   privacyRepository: PrivacyRepository;
+  validateRuntime(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -78,6 +83,16 @@ export function createDependencies(
       auditLog,
       rateLimiter,
       privacyRepository,
+      validateRuntime: async () => {
+        if (config.environment === 'production') {
+          await assertSafePostgresRuntimeRole(pool);
+          await assertPlatformAdminBootstrap(
+            pool,
+            config.defaultTenantId,
+            config.auth.initialPlatformAdminEmails,
+          );
+        }
+      },
       close: async () => {
         await Promise.all([
           repository.close(),
@@ -112,6 +127,7 @@ export function createDependencies(
     auditLog,
     rateLimiter: new InMemoryRateLimiter(),
     privacyRepository,
+    validateRuntime: async () => {},
     close: async () => {
       await Promise.all([
         authRepository.close(),

@@ -8,6 +8,12 @@ import { PostgresJobQueue } from '../src/infrastructure/queue/postgres-job-queue
 import { runMaintenance } from '../src/infrastructure/database/postgres/maintenance';
 import { loadConfig } from '../src/config/env';
 import { createDependencies } from '../src/bootstrap/dependencies';
+import {
+  assertPlatformAdminBootstrap,
+  assertSafePostgresRuntimeRole,
+} from '../src/infrastructure/database/postgres/runtime-role';
+import { grantPostgresRuntimeRole } from '../src/infrastructure/database/postgres/grant-runtime-role';
+import { PostgresAuthRepository } from '../src/infrastructure/auth/postgres-auth-repository';
 
 const adminUrl = process.env.TEST_DATABASE_URL;
 
@@ -16,24 +22,51 @@ test(
   { skip: !adminUrl },
   async () => {
     if (!adminUrl) return;
-    await migrate(adminUrl);
     const admin = new Pool({ connectionString: adminUrl, max: 1 });
     await admin.query(`do $$ begin
+    if not exists(select 1 from pg_roles where rolname='recruiting_os_owner_test') then
+      create role recruiting_os_owner_test login password 'test-owner-password'
+        nosuperuser nobypassrls nocreatedb nocreaterole;
+    end if;
     if not exists(select 1 from pg_roles where rolname='recruiting_os_test') then
-      create role recruiting_os_test login password 'test-only-password' nosuperuser nocreatedb nocreaterole;
+      create role recruiting_os_test login password 'test-only-password'
+        nosuperuser nobypassrls nocreatedb nocreaterole;
     end if;
   end $$`);
-    await admin.query('grant connect on database recruiting_os to recruiting_os_test');
-    await admin.query('grant usage on schema public,app to recruiting_os_test');
-    await admin.query(
-      'grant select,insert,update,delete on all tables in schema public to recruiting_os_test',
-    );
-    await admin.query('grant usage,select on all sequences in schema public to recruiting_os_test');
-    await admin.query('grant execute on all functions in schema app to recruiting_os_test');
+    await admin.query('alter database recruiting_os owner to recruiting_os_owner_test');
+    await admin.query('grant usage,create on schema public to recruiting_os_owner_test');
+    const ownerUrl = new URL(adminUrl);
+    ownerUrl.username = 'recruiting_os_owner_test';
+    ownerUrl.password = 'test-owner-password';
+    await migrate(ownerUrl.toString());
+    await grantPostgresRuntimeRole(ownerUrl.toString(), 'recruiting_os_test');
 
     const url = new URL(adminUrl);
     url.username = 'recruiting_os_test';
     url.password = 'test-only-password';
+    const ownerPool = new Pool({ connectionString: ownerUrl.toString(), max: 1 });
+    const runtimePool = new Pool({ connectionString: url.toString(), max: 1 });
+    await assert.rejects(
+      assertSafePostgresRuntimeRole(ownerPool),
+      /requires a dedicated NOSUPERUSER NOBYPASSRLS role/,
+    );
+    await assert.doesNotReject(assertSafePostgresRuntimeRole(runtimePool));
+    await assert.rejects(
+      assertPlatformAdminBootstrap(runtimePool, 'tenant-a', []),
+      /until the first platform admin exists/,
+    );
+    await assert.doesNotReject(
+      assertPlatformAdminBootstrap(runtimePool, 'tenant-a', ['operator@unc.edu']),
+    );
+    const bootstrapAuth = new PostgresAuthRepository(runtimePool);
+    await bootstrapAuth.upsertIdentity(
+      { issuer: 'https://idp.example', subject: 'initial-admin', email: 'operator@unc.edu' },
+      'tenant-a',
+      ['platform_admin'],
+    );
+    await assert.doesNotReject(assertPlatformAdminBootstrap(runtimePool, 'tenant-a', []));
+    await ownerPool.end();
+    await runtimePool.end();
     const store = new PostgresStore({
       connectionString: url.toString(),
       defaultTenantId: 'tenant-a',
@@ -73,6 +106,8 @@ test(
 
       const queue = new PostgresJobQueue(url.toString(), 1);
       let cancelledJobId = '';
+      let succeededJobId = '';
+      let screenshotJobId = '';
       try {
         const queued = await queue.enqueue({
           tenantId: 'tenant-a',
@@ -98,6 +133,7 @@ test(
           payload: {},
           maxAttempts: 2,
         });
+        succeededJobId = recoverable.id;
         const staleLease = await queue.leaseNext('worker-a', 30);
         assert.equal(staleLease?.id, recoverable.id);
         await admin.query("update jobs set leased_until=now()-interval '1 second' where id=$1", [
@@ -111,9 +147,32 @@ test(
         const renewedLease = await queue.renewLease(recoveredLease!, 60);
         assert.ok(renewedLease);
         await queue.complete(renewedLease!);
+
+        const screenshot = await queue.enqueue({
+          tenantId: 'tenant-a',
+          type: 'ingest.screenshot',
+          idempotencyKey: `screenshot-${crypto.randomUUID()}`,
+          payload: { base64: 'sensitive-postgres-image', organizationId: 'shared' },
+        });
+        screenshotJobId = screenshot.id;
+        const screenshotLease = await queue.leaseNext('worker-screenshot', 30);
+        assert.equal(screenshotLease?.id, screenshot.id);
+        await queue.complete(screenshotLease!);
       } finally {
         await queue.close();
       }
+
+      const terminalScreenshot = (
+        await admin.query<{ payload: { retentionRedacted?: boolean } }>(
+          'select payload from jobs where id=$1',
+          [screenshotJobId],
+        )
+      ).rows[0];
+      assert.equal(terminalScreenshot?.payload.retentionRedacted, true);
+      assert.equal(
+        JSON.stringify(terminalScreenshot?.payload).includes('sensitive-postgres-image'),
+        false,
+      );
 
       const privateSource = await store.stageSource(
         {
@@ -132,10 +191,14 @@ test(
       await admin.query("update jobs set updated_at=now()-interval '31 days' where id=$1", [
         cancelledJobId,
       ]);
+      await admin.query("update jobs set updated_at=now()-interval '31 days' where id=$1", [
+        succeededJobId,
+      ]);
 
       const maintenance = await runMaintenance(url.toString());
       assert.ok(maintenance.privateSourceVersions >= 1);
       assert.ok(maintenance.failedJobPayloads >= 1);
+      assert.ok(maintenance.terminalJobPayloads >= 2);
       const redactedSource = (
         await admin.query<{
           raw_text: string;
@@ -155,6 +218,13 @@ test(
         )
       ).rows[0];
       assert.equal(redactedJob?.payload.retentionRedacted, true);
+      const redactedSucceededJob = (
+        await admin.query<{ payload: { retentionRedacted?: boolean } }>(
+          'select payload from jobs where id=$1',
+          [succeededJobId],
+        )
+      ).rows[0];
+      assert.equal(redactedSucceededJob?.payload.retentionRedacted, true);
     } finally {
       await store.close();
       await admin.end();

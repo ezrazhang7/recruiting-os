@@ -5,6 +5,7 @@ import { requireOrganizationAccess, requireRole } from '../../application/auth/a
 import { AppError, ValidationError } from '../../domain/errors';
 import { DATA_POLICY_VERSION } from '../../domain/data-policy';
 import { stableId } from '../../lib/util';
+import { safeHttpUrl } from '../../lib/safe-url';
 import { resolveOrganization } from '../../resolver';
 import { authentication, idempotencyKey } from '../request-context';
 import { organizationDto, opportunityDto } from '../public-dto';
@@ -100,7 +101,16 @@ export function registerRecruitingRoutes(
               title: z.string().min(1).max(160).optional(),
               deadlineAt: z.string().datetime({ offset: true }).nullable().optional(),
               startsAt: z.string().datetime({ offset: true }).nullable().optional(),
-              url: z.string().url().nullable().optional(),
+              url: z
+                .string()
+                .url()
+                .max(2_048)
+                .refine(
+                  (value) => Boolean(safeHttpUrl(value)),
+                  'URL must use HTTP(S) without credentials',
+                )
+                .nullable()
+                .optional(),
               stale: z.boolean().optional(),
             })
             .strict(),
@@ -190,40 +200,49 @@ export function registerRecruitingRoutes(
     return { jobId: job.id, status: job.status };
   });
 
-  app.post('/api/ingest/screenshot', async (request, reply) => {
-    const principal = authentication(request).principal;
-    const body = screenshotSchema.parse(request.body);
-    requireOrganizationAccess(principal, body.organizationId);
-    try {
-      validateScreenshotBytes(body.base64, body.mimeType, config.limits.screenshotBytes);
-    } catch (error) {
-      throw new ValidationError(error instanceof Error ? error.message : 'Invalid screenshot');
-    }
-    const job = await queue.enqueue({
-      tenantId: principal.tenantId,
-      type: 'ingest.screenshot',
-      idempotencyKey: idempotencyKey(request, {
-        ...body,
-        base64: createHash('sha256').update(body.base64).digest('hex'),
-      }),
-      payload: { ...body, userId: principal.userId },
-    });
-    await auditLog?.write({
-      tenantId: principal.tenantId,
-      actorId: principal.userId,
-      action: 'ingestion.screenshot.queued',
-      resourceType: 'job',
-      resourceId: job.id,
-      requestId: request.id,
-      metadata: {
-        organizationId: body.organizationId,
-        consentToProcess: body.consentToProcess,
-        policyVersion: DATA_POLICY_VERSION,
-      },
-    });
-    reply.status(202);
-    return { jobId: job.id, status: job.status };
-  });
+  app.post(
+    '/api/ingest/screenshot',
+    { bodyLimit: screenshotRequestBodyLimit(config.limits.screenshotBytes) },
+    async (request, reply) => {
+      const principal = authentication(request).principal;
+      const body = screenshotSchema.parse(request.body);
+      requireOrganizationAccess(principal, body.organizationId);
+      try {
+        validateScreenshotBytes(body.base64, body.mimeType, config.limits.screenshotBytes);
+      } catch (error) {
+        throw new ValidationError(error instanceof Error ? error.message : 'Invalid screenshot');
+      }
+      const job = await queue.enqueue({
+        tenantId: principal.tenantId,
+        type: 'ingest.screenshot',
+        idempotencyKey: idempotencyKey(request, {
+          ...body,
+          base64: createHash('sha256').update(body.base64).digest('hex'),
+        }),
+        payload: { ...body, userId: principal.userId },
+      });
+      await auditLog?.write({
+        tenantId: principal.tenantId,
+        actorId: principal.userId,
+        action: 'ingestion.screenshot.queued',
+        resourceType: 'job',
+        resourceId: job.id,
+        requestId: request.id,
+        metadata: {
+          organizationId: body.organizationId,
+          consentToProcess: body.consentToProcess,
+          policyVersion: DATA_POLICY_VERSION,
+        },
+      });
+      reply.status(202);
+      return { jobId: job.id, status: job.status };
+    },
+  );
+}
+
+function screenshotRequestBodyLimit(maxScreenshotBytes: number): number {
+  const base64Bytes = Math.ceil(maxScreenshotBytes / 3) * 4;
+  return base64Bytes + 16_384;
 }
 
 async function renderMetrics(dependencies: AppDependencies, tenantId: string): Promise<string> {

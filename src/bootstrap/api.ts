@@ -8,6 +8,7 @@ import { createDependencies } from './dependencies';
 async function main() {
   const config = loadConfig();
   const dependencies = createDependencies(config);
+  await dependencies.validateRuntime();
   const sessionService = new SessionService(
     dependencies.authRepository,
     config.auth.sessionTtlSeconds,

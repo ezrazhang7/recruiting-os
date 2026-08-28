@@ -1,0 +1,97 @@
+# Optional Prometheus Operator resources. Configure the Prometheus rule/service-monitor selectors
+# to include labels app=recruiting-os before applying this file.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: recruiting-os
+  labels: { app: recruiting-os }
+spec:
+  selector:
+    matchLabels: { app: recruiting-os, component: api }
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+      authorization:
+        type: Bearer
+        credentials:
+          name: recruiting-os-secrets
+          key: METRICS_BEARER_TOKEN
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: recruiting-os
+  labels: { app: recruiting-os }
+spec:
+  groups:
+    - name: recruiting-os.application
+      rules:
+        - alert: RecruitingOSApiUnavailable
+          expr: kube_deployment_status_replicas_available{deployment="recruiting-os-api"} < 2
+          for: 5m
+          labels: { severity: page }
+          annotations:
+            summary: Recruiting OS API has fewer than two available replicas
+            runbook_url: https://github.com/ezrazhang7/recruiting-os/blob/main/docs/RUNBOOK.md#alerts-and-first-response
+        - alert: RecruitingOSWorkerUnavailable
+          expr: kube_deployment_status_replicas_available{deployment="recruiting-os-worker"} < 1
+          for: 5m
+          labels: { severity: page }
+          annotations:
+            summary: Recruiting OS has no available worker
+            runbook_url: https://github.com/ezrazhang7/recruiting-os/blob/main/docs/RUNBOOK.md#alerts-and-first-response
+        - alert: RecruitingOSHighErrorRate
+          expr: >-
+            sum(rate(recruiting_os_http_requests_total{status=~"5.."}[10m]))
+            / clamp_min(sum(rate(recruiting_os_http_requests_total[10m])), 0.001) > 0.02
+          for: 10m
+          labels: { severity: page }
+          annotations:
+            summary: Recruiting OS HTTP 5xx rate exceeds 2%
+            runbook_url: https://github.com/ezrazhang7/recruiting-os/blob/main/docs/RUNBOOK.md#alerts-and-first-response
+        - alert: RecruitingOSHighLatency
+          expr: >-
+            histogram_quantile(0.95,
+              sum by (le) (rate(recruiting_os_http_request_duration_ms_bucket[5m]))) > 2000
+          for: 10m
+          labels: { severity: page }
+          annotations:
+            summary: Recruiting OS p95 HTTP latency exceeds two seconds
+            runbook_url: https://github.com/ezrazhang7/recruiting-os/blob/main/docs/RUNBOOK.md#alerts-and-first-response
+        - alert: RecruitingOSOidcFailureRate
+          expr: >-
+            sum(rate(recruiting_os_http_requests_total{route="_auth_callback",status!~"2..|3.."}[10m]))
+            / clamp_min(sum(rate(recruiting_os_http_requests_total{route="_auth_callback"}[10m])), 0.001) > 0.05
+            and sum(increase(recruiting_os_http_requests_total{route="_auth_callback"}[10m])) >= 5
+          for: 5m
+          labels: { severity: page }
+          annotations:
+            summary: Recruiting OS OIDC callback failures exceed 5%
+            runbook_url: https://github.com/ezrazhang7/recruiting-os/blob/main/docs/RUNBOOK.md#alerts-and-first-response
+        - alert: RecruitingOSQueueStalled
+          expr: recruiting_os_oldest_ready_job_age_seconds > 300
+          for: 5m
+          labels: { severity: page }
+          annotations:
+            summary: Recruiting OS has ready work older than five minutes
+            runbook_url: https://github.com/ezrazhang7/recruiting-os/blob/main/docs/RUNBOOK.md#alerts-and-first-response
+        - alert: RecruitingOSDeadLetterGrowth
+          expr: >-
+            max_over_time(recruiting_os_jobs{status="dead_letter"}[5m])
+            > min_over_time(recruiting_os_jobs{status="dead_letter"}[5m])
+          for: 1m
+          labels: { severity: page }
+          annotations:
+            summary: Recruiting OS dead-letter count increased
+            runbook_url: https://github.com/ezrazhang7/recruiting-os/blob/main/docs/RUNBOOK.md#alerts-and-first-response
+        - alert: RecruitingOSMaintenanceStale
+          expr: >-
+            time() - kube_cronjob_status_last_successful_time{cronjob="recruiting-os-maintenance"}
+            > 172800
+          for: 15m
+          labels: { severity: page }
+          annotations:
+            summary: Recruiting OS maintenance has not succeeded in two days
+            runbook_url: https://github.com/ezrazhang7/recruiting-os/blob/main/docs/RUNBOOK.md#alerts-and-first-response

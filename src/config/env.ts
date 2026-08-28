@@ -20,6 +20,7 @@ const schema = z.object({
   OIDC_CLIENT_SECRET: z.string().optional(),
   OIDC_REDIRECT_URI: z.string().url().optional(),
   OIDC_ALLOWED_EMAIL_DOMAIN: z.string().default('unc.edu'),
+  INITIAL_PLATFORM_ADMIN_EMAILS: z.string().default(''),
   DEFAULT_TENANT_ID: z.string().min(1).default('unc'),
   ALLOWED_ORIGINS: z.string().default(''),
   OPENAI_API_KEY: z.string().optional(),
@@ -71,9 +72,51 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     if (value.DATABASE_DRIVER !== 'postgres' || !value.DATABASE_URL) {
       throw new Error('Production requires DATABASE_DRIVER=postgres and DATABASE_URL');
     }
+    const databaseUrl = new URL(value.DATABASE_URL);
+    if (!['postgres:', 'postgresql:'].includes(databaseUrl.protocol)) {
+      throw new Error('Production DATABASE_URL must use the Postgres protocol');
+    }
+    const sslMode = databaseUrl.searchParams.get('sslmode');
+    if (
+      !['require', 'verify-ca', 'verify-full'].includes(sslMode ?? '') &&
+      databaseUrl.searchParams.get('ssl') !== 'true'
+    ) {
+      throw new Error('Production DATABASE_URL must require TLS');
+    }
     if (value.AUTH_MODE !== 'oidc') throw new Error('Production requires AUTH_MODE=oidc');
     if (!value.OIDC_ISSUER || !value.OIDC_CLIENT_ID || !value.OIDC_REDIRECT_URI) {
       throw new Error('Production OIDC configuration is incomplete');
+    }
+    for (const [name, target] of [
+      ['OIDC_ISSUER', value.OIDC_ISSUER],
+      ['OIDC_REDIRECT_URI', value.OIDC_REDIRECT_URI],
+    ] as const) {
+      const url = new URL(target);
+      if (url.protocol !== 'https:' || url.username || url.password) {
+        throw new Error(`Production ${name} must be a credential-free HTTPS URL`);
+      }
+    }
+    for (const [name, target] of [
+      ['GOOGLE_REDIRECT_URI', value.GOOGLE_REDIRECT_URI],
+      ['GROUPME_REDIRECT_URI', value.GROUPME_REDIRECT_URI],
+      ['META_REDIRECT_URI', value.META_REDIRECT_URI],
+      ['LINKEDIN_REDIRECT_URI', value.LINKEDIN_REDIRECT_URI],
+    ] as const) {
+      if (!target) continue;
+      const url = new URL(target);
+      if (url.protocol !== 'https:' || url.username || url.password) {
+        throw new Error(`Production ${name} must be a credential-free HTTPS URL`);
+      }
+    }
+    const initialAdminEmails = value.INITIAL_PLATFORM_ADMIN_EMAILS.split(',')
+      .map((email) => email.trim().toLowerCase())
+      .filter(Boolean);
+    if (
+      initialAdminEmails.some(
+        (email) => !email.endsWith(`@${value.OIDC_ALLOWED_EMAIL_DOMAIN.toLowerCase()}`),
+      )
+    ) {
+      throw new Error('Initial platform administrators must use the allowed OIDC email domain');
     }
     if (value.SESSION_SECRET.includes('development-only')) {
       throw new Error('Production SESSION_SECRET must be changed');
@@ -114,6 +157,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
       clientSecret: value.OIDC_CLIENT_SECRET,
       redirectUri: value.OIDC_REDIRECT_URI,
       allowedEmailDomain: value.OIDC_ALLOWED_EMAIL_DOMAIN,
+      initialPlatformAdminEmails: value.INITIAL_PLATFORM_ADMIN_EMAILS.split(',')
+        .map((email) => email.trim().toLowerCase())
+        .filter(Boolean),
     },
     defaultTenantId: value.DEFAULT_TENANT_ID,
     allowedOrigins: value.ALLOWED_ORIGINS.split(',')

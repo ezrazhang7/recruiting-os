@@ -4,7 +4,10 @@
 
 1. Build an immutable image tagged with the reviewed commit SHA and scan it for critical/high CVEs.
 2. Back up production and verify both the archive manifest and its SHA-256 sidecar.
-3. Run `npm run migrate` as a one-off job. Migrations are forward-only in production.
+3. Run `npm run migrate` as the dedicated migration owner, then run `npm run grant:runtime` with
+   `MIGRATION_DATABASE_URL` and `RUNTIME_DATABASE_ROLE`. Disable the owner credential after use and
+   verify the API/worker `DATABASE_URL` uses that separate `NOSUPERUSER NOBYPASSRLS` non-owner
+   runtime role. Migrations are forward-only in production.
 4. Deploy one API canary, verify readiness, login, dashboard, ingestion enqueue, worker completion, and metrics.
 5. Roll the API and workers. Watch error rate, p95 latency, database connections, queue age, retry rate, dead letters, and OIDC failures for 30 minutes.
 
@@ -18,6 +21,11 @@ replicas or pool size independently without recalculating this ceiling.
 Workers renew their lease while processing long jobs. A crashed worker's expired job is reclaimed by
 another worker until its configured final attempt, when it is dead-lettered. During a rollout, allow
 the configured 120-second termination grace period before forcefully terminating a worker.
+
+For a new tenant, set `INITIAL_PLATFORM_ADMIN_EMAILS` to one pre-approved verified UNC account,
+have that operator complete OIDC login, verify the resulting platform-admin membership, then remove
+the bootstrap value in the next configuration rollout. Subsequent role changes require a reviewed,
+audited database operation; never leave a broad or shared address in the bootstrap list.
 
 `/health/live` proves only that the API process can answer; it deliberately bypasses external
 dependencies so a database outage does not cause a restart loop. `/health/ready` checks the
@@ -45,6 +53,13 @@ $METRICS_BEARER_TOKEN`, sourced from the production secret manager. It must not 
 or connector token. Rotate this credential and validate that unauthenticated and stale credentials
 receive HTTP 401.
 
+Clusters using Prometheus Operator can apply `deploy/monitoring.yaml` after configuring Prometheus
+to select resources labelled `app=recruiting-os`. The included ServiceMonitor reads the bearer
+credential from `recruiting-os-secrets`; the included PrometheusRule covers application
+availability, worker availability, HTTP errors/latency, OIDC failures, queue age, dead-letter
+growth, and stale maintenance. Validate the rendered rules with `promtool` and trigger each rule in
+staging before release.
+
 Alert rules must also consume the exported queue gauges and the managed database, backup, and
 container-memory metrics. Validate each rule with a synthetic failure before release.
 
@@ -65,7 +80,8 @@ release gate.
 Rotate the session secret and credential encryption key through the secret manager. Key rotation is staged: deploy support for the new key version, re-encrypt credentials, verify counts, then retire the previous key. Revoke a connector through the API and at the provider. Audit evidence reads, organization changes, connector lifecycle actions, and ingestion queue actions.
 
 The Kubernetes maintenance CronJob runs `npm run maintenance` daily. Alert when it misses two runs
-or fails. It redacts raw private source versions after 90 days and terminal job payloads after 30
+or fails. Screenshot bytes are discarded as soon as their job succeeds or becomes terminal. The
+job redacts raw private source versions after 90 days and every other terminal job payload after 30
 days, clears expired sessions/rate-limit buckets, deletes credentials revoked for 30 days, and
 retains audit events for 365 days. Investigate all SSRF blocks and repeated cross-tenant
 authorization failures.

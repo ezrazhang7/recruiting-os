@@ -10,6 +10,7 @@ import {
   setSignedCookie,
 } from '../request-context';
 import type { AppDependencies } from '../types';
+import { safeRelativeReturnTo } from '../../lib/safe-url';
 
 const providerSchema = z.enum(['gmail', 'groupme', 'instagram', 'linkedin']);
 const providerStateSchema = z.object({
@@ -101,7 +102,7 @@ export function registerConnectorRoutes(
       requestId: request.id,
     });
     reply.clearCookie(PROVIDER_COOKIE, { path: '/api/connectors' });
-    return reply.redirect(state.returnTo);
+    return reply.redirect(safeRelativeReturnTo(state.returnTo, '/?connectors=1'));
   });
 
   app.get('/api/connectors/:provider/status', async (request) => {

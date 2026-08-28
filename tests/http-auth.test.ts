@@ -245,6 +245,40 @@ test('screenshots are rejected when bytes do not match the declared MIME type', 
   await store.close();
 });
 
+test('screenshot requests have a separate bound sized for their configured binary limit', async () => {
+  const { app, store } = await fixture({
+    MAX_REQUEST_BYTES: '1024',
+    MAX_SCREENSHOT_BYTES: '2048',
+  });
+  const { cookie, csrf } = await login(app);
+  await app.inject({
+    method: 'POST',
+    url: '/api/organizations',
+    headers: { cookie, 'x-csrf-token': csrf },
+    payload: { id: 'club', name: 'Club', school: 'UNC' },
+  });
+  const image = Buffer.alloc(1_500);
+  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(image);
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/ingest/screenshot',
+    headers: { cookie, 'x-csrf-token': csrf },
+    payload: {
+      organizationId: 'club',
+      base64: image.toString('base64'),
+      mimeType: 'image/png',
+      consentToProcess: true,
+    },
+  });
+  assert.equal(response.statusCode, 202, response.body);
+  assert.equal(
+    (store.db.prepare('select count(*) as count from jobs').get() as { count: number }).count,
+    1,
+  );
+  await app.close();
+  await store.close();
+});
+
 test('organization editors cannot read another organization evidence', async () => {
   const { app, store } = await fixture();
   const { cookie, csrf } = await login(app);

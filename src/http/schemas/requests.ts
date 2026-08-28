@@ -1,4 +1,11 @@
 import { z } from 'zod';
+import { safeHttpUrl } from '../../lib/safe-url';
+
+const httpUrl = z
+  .string()
+  .url()
+  .max(2_048)
+  .refine((value) => Boolean(safeHttpUrl(value)), 'URL must use HTTP(S) without credentials');
 
 export const organizationSchema = z
   .object({
@@ -9,14 +16,14 @@ export const organizationSchema = z
       .regex(/^[a-z0-9][a-z0-9-]*$/),
     name: z.string().min(2).max(160),
     school: z.string().min(2).max(160),
-    heelLifeUrl: z.string().url().optional(),
-    websiteUrl: z.string().url().optional(),
+    heelLifeUrl: httpUrl.optional(),
+    websiteUrl: httpUrl.optional(),
     instagramHandle: z.string().min(2).max(80).optional(),
-    linkedinUrl: z.string().url().optional(),
+    linkedinUrl: httpUrl.optional(),
   })
   .strict();
 export const ingestUrlSchema = z
-  .object({ organizationId: z.string().min(2).max(80), url: z.string().url().max(2_048) })
+  .object({ organizationId: z.string().min(2).max(80), url: httpUrl })
   .strict();
 export const screenshotSchema = z
   .object({
@@ -24,7 +31,7 @@ export const screenshotSchema = z
     base64: z.string().min(4),
     mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
     note: z.string().max(2_000).optional(),
-    url: z.string().url().optional(),
+    url: httpUrl.optional(),
     publishedAt: z.string().datetime({ offset: true }).optional(),
     consentToProcess: z.literal(true),
   })

@@ -36,6 +36,37 @@ test('durable queue deduplicates, leases, retries, and dead-letters', async () =
   await store.close();
 });
 
+test('terminal screenshot jobs immediately discard raw image payloads', async () => {
+  const store = new Store();
+  const queue = new SqliteJobQueue(store);
+  const successful = await queue.enqueue({
+    tenantId: 'tenant_default',
+    type: 'ingest.screenshot',
+    idempotencyKey: 'screenshot-success',
+    payload: { base64: 'sensitive-image-success', organizationId: 'club-a' },
+  });
+  await queue.complete((await queue.leaseNext('worker'))!);
+
+  const failed = await queue.enqueue({
+    tenantId: 'tenant_default',
+    type: 'ingest.screenshot',
+    idempotencyKey: 'screenshot-failure',
+    payload: { base64: 'sensitive-image-failure', organizationId: 'club-a' },
+    maxAttempts: 1,
+  });
+  await queue.fail((await queue.leaseNext('worker'))!, new Error('terminal extraction failure'));
+
+  const rows = store.db
+    .prepare('select id,status,payload from jobs where id in (?,?) order by id')
+    .all(successful.id, failed.id) as Array<{ id: string; status: string; payload: string }>;
+  assert.deepEqual(rows.map((row) => row.status).sort(), ['dead_letter', 'succeeded']);
+  for (const row of rows) {
+    assert.equal(row.payload.includes('sensitive-image'), false);
+    assert.equal(JSON.parse(row.payload).retentionRedacted, true);
+  }
+  await store.close();
+});
+
 test('queue leases fairly across tenants', async () => {
   const store = new Store();
   const queue = new SqliteJobQueue(store);
@@ -107,6 +138,32 @@ test('a crashed final attempt is dead-lettered instead of leased forever', async
   };
   assert.equal(row.status, 'dead_letter');
   assert.match(row.last_error, /lease expired/i);
+  await store.close();
+});
+
+test('an expired final screenshot lease also discards the image payload', async () => {
+  const store = new Store();
+  const queue = new SqliteJobQueue(store);
+  const queued = await queue.enqueue({
+    tenantId: 'tenant_default',
+    type: 'ingest.screenshot',
+    idempotencyKey: 'screenshot-expired',
+    payload: { base64: 'sensitive-expired-image' },
+    maxAttempts: 1,
+  });
+  await queue.leaseNext('worker-a', 30);
+  store.db
+    .prepare('update jobs set leased_until=? where id=?')
+    .run(new Date(0).toISOString(), queued.id);
+
+  assert.equal(await queue.leaseNext('worker-b', 30), undefined);
+  const row = store.db.prepare('select status,payload from jobs where id=?').get(queued.id) as {
+    status: string;
+    payload: string;
+  };
+  assert.equal(row.status, 'dead_letter');
+  assert.equal(row.payload.includes('sensitive-expired-image'), false);
+  assert.equal(JSON.parse(row.payload).retentionRedacted, true);
   await store.close();
 });
 

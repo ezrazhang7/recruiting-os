@@ -11,8 +11,9 @@ confidential. OAuth credentials and session secrets are classified as restricted
 - Encrypt restricted data in transit and at rest; store provider tokens only in the credential
   vault.
 - Record the actor and purpose for sensitive reads and every mutation.
-- Default retention is 90 days for raw private source content and 30 days for failed job payloads;
-  derived public opportunity data may be retained while current.
+- Default retention is 90 days for raw private source content and at most 30 days for all terminal
+  job payloads. Screenshot bytes are discarded immediately when their job succeeds or becomes
+  terminal; derived public opportunity data may be retained while current.
 - Support tenant export, correction, connector revocation, and deletion workflows.
 - A self-service account export contains identity, membership, connector metadata, contribution
   metadata, and activity history. It never contains access/refresh tokens or raw private evidence.

@@ -3,6 +3,8 @@ import { Pool } from 'pg';
 export interface MaintenanceResult {
   privateSourceVersions: number;
   privateClaimEvidence: number;
+  terminalJobPayloads: number;
+  /** @deprecated Use terminalJobPayloads. Retained for existing dashboards. */
   failedJobPayloads: number;
   expiredSessions: number;
   revokedCredentials: number;

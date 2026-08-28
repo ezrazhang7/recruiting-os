@@ -26,9 +26,11 @@ test('provider OAuth uses PKCE and validates provider-bound state', async () => 
     },
   );
   const authorization = service.authorization('gmail', 'user', 'tenant');
+  const unsafeReturn = service.authorization('gmail', 'user', 'tenant', '//evil.example');
   const url = new URL(authorization.url);
   assert.equal(url.searchParams.get('code_challenge_method'), 'S256');
   assert.ok(url.searchParams.get('code_challenge'));
+  assert.equal(unsafeReturn.state.returnTo, '/?connectors=1');
   const credential = await service.callback('gmail', 'code', authorization.state);
   assert.match(tokenBody, /code_verifier=/);
   assert.equal(credential.accessToken, 'token');
@@ -71,4 +73,25 @@ test('provider OAuth refresh preserves a rotated refresh token and scopes', asyn
   assert.equal(refreshed.refreshToken, 'new-refresh');
   assert.deepEqual(refreshed.scopes, ['gmail.readonly']);
   assert.ok(Date.parse(refreshed.expiresAt!) > Date.now());
+});
+
+test('provider OAuth rejects oversized token responses', async () => {
+  const service = new ProviderOAuthService(
+    {
+      gmail: {
+        clientId: 'client',
+        redirectUri: 'https://app.example/api/connectors/gmail/callback',
+      },
+    },
+    async () =>
+      new Response('{}', {
+        status: 200,
+        headers: { 'content-length': String(65 * 1024), 'content-type': 'application/json' },
+      }),
+  );
+  const authorization = service.authorization('gmail', 'user', 'tenant');
+  await assert.rejects(
+    () => service.callback('gmail', 'code', authorization.state),
+    /Response exceeds size limit/,
+  );
 });

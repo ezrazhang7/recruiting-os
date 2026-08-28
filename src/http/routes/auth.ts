@@ -10,6 +10,8 @@ import {
   setSignedCookie,
 } from '../request-context';
 import type { AppDependencies } from '../types';
+import { initialRolesForIdentity } from '../../application/auth/initial-roles';
+import { safeRelativeReturnTo } from '../../lib/safe-url';
 
 const oidcStateSchema = z.object({
   state: z.string().min(1),
@@ -60,7 +62,11 @@ export function registerAuthRoutes(
     if (state.state !== query.state)
       throw new AppError('OIDC state mismatch', 400, 'OIDC_STATE_INVALID');
     const identity = await oidc.callback(query.code, state);
-    const issued = await sessionService.issue(identity, config.defaultTenantId);
+    const issued = await sessionService.issue(
+      identity,
+      config.defaultTenantId,
+      initialRolesForIdentity(identity.email, config.auth.initialPlatformAdminEmails),
+    );
     setSessionCookies(
       reply,
       sessionCookie,
@@ -70,7 +76,7 @@ export function registerAuthRoutes(
       config.auth.sessionTtlSeconds,
     );
     reply.clearCookie(OIDC_COOKIE, { path: '/auth' });
-    return reply.redirect(state.returnTo);
+    return reply.redirect(safeRelativeReturnTo(state.returnTo));
   });
 
   app.post('/auth/development', async (request, reply) => {

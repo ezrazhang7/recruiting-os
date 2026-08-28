@@ -20,6 +20,7 @@
     "start": "node --experimental-sqlite dist/src/bootstrap/api.js",
     "worker": "node --experimental-sqlite dist/src/bootstrap/worker.js",
     "migrate": "node dist/src/infrastructure/database/postgres/migrate.js",
+    "grant:runtime": "node dist/src/infrastructure/database/postgres/grant-runtime-role.js",
     "maintenance": "node dist/src/infrastructure/database/postgres/maintenance.js",
     "dev": "npm run build && npm start",
     "demo:180dc": "node --experimental-sqlite dist/scripts/demo-180dc.js",

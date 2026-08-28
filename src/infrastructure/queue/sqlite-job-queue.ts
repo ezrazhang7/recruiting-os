@@ -59,11 +59,14 @@ export class SqliteJobQueue implements JobQueue {
     return this.store.transaction(async () => {
       const statement = this.store.db.prepare(
         `update jobs set status='cancelled',leased_by=null,leased_until=null,
-         last_error='Cancelled by connector revocation',updated_at=? where id=?
+         last_error='Cancelled by connector revocation',
+         payload=case when type='ingest.screenshot' then ? else payload end,
+         updated_at=? where id=?
          and status in ('queued','retryable_failed')`,
       );
       let cancelled = 0;
-      for (const id of ids) cancelled += Number(statement.run(nowIso(), id).changes);
+      for (const id of ids)
+        cancelled += Number(statement.run(this.redactedPayload(), nowIso(), id).changes);
       return cancelled;
     });
   }
@@ -73,10 +76,11 @@ export class SqliteJobQueue implements JobQueue {
       this.store.db
         .prepare(
           `update jobs set status='dead_letter',leased_by=null,leased_until=null,
-           last_error='Worker lease expired after final attempt',updated_at=?
+           last_error='Worker lease expired after final attempt',
+           payload=case when type='ingest.screenshot' then ? else payload end,updated_at=?
            where status='running' and leased_until<? and attempt_count>=max_attempts`,
         )
-        .run(nowIso(), nowIso());
+        .run(this.redactedPayload(), nowIso(), nowIso());
       const row = this.store.db
         .prepare(
           `with ranked as (
@@ -130,10 +134,18 @@ export class SqliteJobQueue implements JobQueue {
     if (!job.leasedBy || !job.leasedUntil) throw new Error('Job lease is missing');
     const changed = this.store.db
       .prepare(
-        `update jobs set status='succeeded',leased_by=null,leased_until=null,last_error=null,updated_at=?
+        `update jobs set status='succeeded',leased_by=null,leased_until=null,last_error=null,
+        payload=case when type='ingest.screenshot' then ? else payload end,updated_at=?
       where id=? and status='running' and leased_by=? and leased_until=? and leased_until>?`,
       )
-      .run(nowIso(), job.id, job.leasedBy, job.leasedUntil, nowIso()).changes;
+      .run(
+        this.redactedPayload(),
+        nowIso(),
+        job.id,
+        job.leasedBy,
+        job.leasedUntil,
+        nowIso(),
+      ).changes;
     if (!changed) throw new Error('Job lease is no longer valid');
   }
 
@@ -143,13 +155,16 @@ export class SqliteJobQueue implements JobQueue {
     const delay = Math.min(900, 2 ** Math.min(job.attemptCount, 9));
     const changed = this.store.db
       .prepare(
-        `update jobs set status=?,available_at=?,leased_by=null,leased_until=null,last_error=?,updated_at=?
+        `update jobs set status=?,available_at=?,leased_by=null,leased_until=null,last_error=?,
+        payload=case when ? and type='ingest.screenshot' then ? else payload end,updated_at=?
       where id=? and status='running' and leased_by=? and leased_until=? and leased_until>?`,
       )
       .run(
         terminal ? 'dead_letter' : 'retryable_failed',
         new Date(Date.now() + delay * 1000).toISOString(),
         (error instanceof Error ? error.message : String(error)).slice(0, 500),
+        terminal ? 1 : 0,
+        this.redactedPayload(),
         nowIso(),
         job.id,
         job.leasedBy,
@@ -183,6 +198,14 @@ export class SqliteJobQueue implements JobQueue {
   }
 
   async close(): Promise<void> {}
+
+  private redactedPayload(): string {
+    return JSON.stringify({
+      retentionRedacted: true,
+      redactedAt: nowIso(),
+      reason: 'terminal-screenshot-job',
+    });
+  }
 
   private map(row: Record<string, unknown>): Job {
     return {

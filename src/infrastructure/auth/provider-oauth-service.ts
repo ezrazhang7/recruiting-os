@@ -1,5 +1,9 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { ProviderCredential } from '../../application/ports/credential-vault';
+import { safeRelativeReturnTo } from '../../lib/safe-url';
+import { boundedResponse } from '../outbound-http/bounded-response';
+
+const maxTokenResponseBytes = 64 * 1024;
 
 export type OAuthProvider = 'gmail' | 'groupme' | 'instagram' | 'linkedin';
 export interface ProviderOAuthState {
@@ -67,7 +71,7 @@ export class ProviderOAuthService {
       verifier: randomBytes(48).toString('base64url'),
       userId,
       tenantId,
-      returnTo: returnTo.startsWith('/') ? returnTo : '/?connectors=1',
+      returnTo: safeRelativeReturnTo(returnTo, '/?connectors=1'),
     };
     const challenge = createHash('sha256').update(state.verifier).digest('base64url');
     const url = new URL(definition.authorizationEndpoint);
@@ -159,8 +163,12 @@ export class ProviderOAuthService {
     } finally {
       clearTimeout(timer);
     }
-    if (!response.ok) throw new Error(`Provider token exchange failed: ${response.status}`);
-    return (await response.json()) as {
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error(`Provider token exchange failed: ${response.status}`);
+    }
+    const bounded = await boundedResponse(response, maxTokenResponseBytes);
+    return (await bounded.json()) as {
       access_token?: string;
       refresh_token?: string;
       expires_in?: number;

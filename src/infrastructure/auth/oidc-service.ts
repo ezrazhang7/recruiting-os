@@ -1,10 +1,29 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { safeRelativeReturnTo } from '../../lib/safe-url';
+import { boundedResponse } from '../outbound-http/bounded-response';
+
+const maxOidcMetadataBytes = 64 * 1024;
 
 interface Discovery {
   authorization_endpoint: string;
   token_endpoint: string;
   jwks_uri: string;
   issuer: string;
+}
+
+export function validatedDiscovery(value: unknown, configuredIssuer: string): Discovery {
+  if (!value || typeof value !== 'object') throw new Error('OIDC discovery response is invalid');
+  const candidate = value as Partial<Discovery>;
+  if (candidate.issuer !== configuredIssuer) throw new Error('OIDC issuer mismatch');
+  for (const key of ['authorization_endpoint', 'token_endpoint', 'jwks_uri'] as const) {
+    const endpoint = candidate[key];
+    if (typeof endpoint !== 'string') throw new Error(`OIDC discovery is missing ${key}`);
+    const url = new URL(endpoint);
+    if (url.protocol !== 'https:' || url.username || url.password) {
+      throw new Error(`OIDC discovery ${key} must be a credential-free HTTPS URL`);
+    }
+  }
+  return candidate as Discovery;
 }
 export interface OidcState {
   state: string;
@@ -25,6 +44,35 @@ export interface OidcOptions {
   redirectUri: string;
   allowedEmailDomain: string;
 }
+
+interface VerifiedIdentityPayload {
+  sub?: unknown;
+  email?: unknown;
+  email_verified?: unknown;
+  name?: unknown;
+}
+
+export function verifiedIdentityClaims(
+  payload: VerifiedIdentityPayload,
+  issuer: string,
+  allowedEmailDomain: string,
+): OidcClaims {
+  if (typeof payload.sub !== 'string' || !payload.sub.trim()) {
+    throw new Error('OIDC subject is missing');
+  }
+  if (payload.email_verified !== true) throw new Error('Verified email is required');
+  const email = typeof payload.email === 'string' ? payload.email.trim() : '';
+  if (!email.toLowerCase().endsWith(`@${allowedEmailDomain.toLowerCase()}`)) {
+    throw new Error('Email domain is not allowed');
+  }
+  return {
+    issuer,
+    subject: payload.sub,
+    email,
+    displayName: typeof payload.name === 'string' ? payload.name : undefined,
+  };
+}
+
 export class OidcService {
   private discovery?: Promise<Discovery>;
   constructor(private readonly options: OidcOptions) {}
@@ -34,7 +82,7 @@ export class OidcService {
       state: randomBytes(24).toString('base64url'),
       nonce: randomBytes(24).toString('base64url'),
       verifier: randomBytes(48).toString('base64url'),
-      returnTo: returnTo.startsWith('/') ? returnTo : '/',
+      returnTo: safeRelativeReturnTo(returnTo),
     };
     const challenge = createHash('sha256').update(state.verifier).digest('base64url');
     const url = new URL(discovery.authorization_endpoint);
@@ -71,8 +119,13 @@ export class OidcService {
     } finally {
       clearTimeout(timer);
     }
-    if (!tokenResponse.ok) throw new Error(`OIDC token exchange failed: ${tokenResponse.status}`);
-    const tokens = (await tokenResponse.json()) as { id_token?: string };
+    if (!tokenResponse.ok) {
+      await tokenResponse.body?.cancel();
+      throw new Error(`OIDC token exchange failed: ${tokenResponse.status}`);
+    }
+    const tokens = (await boundedResponse(tokenResponse, maxOidcMetadataBytes).then((response) =>
+      response.json(),
+    )) as { id_token?: string };
     if (!tokens.id_token) throw new Error('OIDC response did not include an ID token');
     const { createRemoteJWKSet, jwtVerify } = await import('jose');
     const jwks = createRemoteJWKSet(new URL(discovery.jwks_uri));
@@ -81,18 +134,7 @@ export class OidcService {
       audience: this.options.clientId,
     });
     if (payload.nonce !== state.nonce) throw new Error('OIDC nonce mismatch');
-    const email = typeof payload.email === 'string' ? payload.email : undefined;
-    if (
-      !email ||
-      !email.toLowerCase().endsWith(`@${this.options.allowedEmailDomain.toLowerCase()}`)
-    )
-      throw new Error('Email domain is not allowed');
-    return {
-      issuer: discovery.issuer,
-      subject: String(payload.sub),
-      email,
-      displayName: typeof payload.name === 'string' ? payload.name : undefined,
-    };
+    return verifiedIdentityClaims(payload, discovery.issuer, this.options.allowedEmailDomain);
   }
   private async getDiscovery(): Promise<Discovery> {
     this.discovery ??= (async () => {
@@ -103,10 +145,12 @@ export class OidcService {
         const response = await fetch(`${issuer}/.well-known/openid-configuration`, {
           signal: controller.signal,
         });
-        if (!response.ok) throw new Error(`OIDC discovery failed: ${response.status}`);
-        const value = (await response.json()) as Discovery;
-        if (value.issuer !== issuer) throw new Error('OIDC issuer mismatch');
-        return value;
+        if (!response.ok) {
+          await response.body?.cancel();
+          throw new Error(`OIDC discovery failed: ${response.status}`);
+        }
+        const bounded = await boundedResponse(response, maxOidcMetadataBytes);
+        return validatedDiscovery(await bounded.json(), issuer);
       } finally {
         clearTimeout(timer);
       }

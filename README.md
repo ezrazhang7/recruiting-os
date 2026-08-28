@@ -8,14 +8,14 @@ This repository contains production-oriented application code, but a deployment 
 
 ## Architecture
 
-- Fastify API with deny-by-default authentication, server-side hashed sessions, CSRF protection, RBAC, organization scoping, strict request validation, CSP/CORS, bounded bodies, and sanitized errors.
+- Fastify API with deny-by-default authentication, server-side hashed sessions, CSRF protection, RBAC, organization scoping, strict request validation, CSP/CORS, independently bounded ordinary and screenshot bodies, and sanitized errors.
 - Immutable logical sources and content-addressed source versions. Failed extraction remains retryable; changed content at the same URL creates a new version; unchanged content is a no-op.
 - Evidence resolver with authority/recency rules, IANA `America/New_York` time handling, date precision, policy versioning, and audited human overrides.
 - Postgres production repositories with tenant RLS, migrations, encrypted connector credentials, durable fair queues, renewable worker leases, crash recovery, retries, dead letters, cursor state, and shared rate limiting.
 - Workers for bounded URL/screenshot ingestion and durable recurring Gmail, GroupMe, Instagram, and LinkedIn sync. Provider calls use host allowlists, request timeouts, bounded streamed responses, standards-correct retry/backoff, and worker-wide circuit breaking; public URL fetches revalidate DNS and every redirect against SSRF policy.
 - Accessible student UI and evidence/admin controls served as same-origin assets. Student DTOs omit internal tenant and evidence data.
-- Structured redacted logs, request IDs, protected Prometheus-format API/queue metrics, health/readiness probes, immutable container deployment templates, and backup/recovery runbooks.
-- Versioned consent for private connectors/screenshots and an executable retention job that redacts expired private evidence and terminal job payloads.
+- Structured redacted logs, request IDs, protected Prometheus-format API/queue metrics, deployable Prometheus Operator alerts, health/readiness probes, immutable container deployment templates, and backup/recovery runbooks.
+- Versioned consent for private connectors/screenshots and an executable retention policy that immediately discards terminal screenshot bytes and redacts other expired private evidence and terminal job payloads.
 - User-scoped connector cursors, per-version contributor provenance, metadata-only self-service
   exports, and account erasure that deletes sole-contributor private evidence while preserving
   independently shared evidence and durably reconciling derived opportunities.
@@ -47,21 +47,39 @@ This starts Postgres, applies migrations, and runs separate API and worker conta
 
 Production startup fails closed unless all of the following are set:
 
-- `NODE_ENV=production`, `DATABASE_DRIVER=postgres`, and a TLS-capable `DATABASE_URL`.
+- `NODE_ENV=production`, `DATABASE_DRIVER=postgres`, and a TLS-required `DATABASE_URL` (prefer
+  `sslmode=verify-full`) using a dedicated `NOSUPERUSER NOBYPASSRLS` runtime role. The runtime role must not own or inherit
+  ownership of tenant tables; startup rejects unsafe roles.
 - `DATABASE_POOL_SIZE` as the total connection budget per process; size it with the maximum API and
   worker replica count using the formula in the runbook.
-- `AUTH_MODE=oidc`, `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_REDIRECT_URI`, a non-development `SESSION_SECRET`, and the permitted email domain.
+- `AUTH_MODE=oidc`, `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_REDIRECT_URI`, a non-development
+  `SESSION_SECRET` and the permitted email domain. A new empty tenant also needs one exact verified
+  UNC address in `INITIAL_PLATFORM_ADMIN_EMAILS` to bootstrap the first operator; startup accepts
+  an empty list only after a platform-admin membership exists.
 - A 32-byte base64 `CREDENTIAL_MASTER_KEY` and a distinct 32+ character `METRICS_BEARER_TOKEN`, both sourced from a secret manager.
 - Exact `ALLOWED_ORIGINS`, trusted-proxy configuration, provider OAuth credentials/redirects, and an optional OpenAI extraction key.
 
 See [.env.example](.env.example) for the complete contract. Do not commit `.env` or credentials.
+The initial-admin allowlist grants or restores `platform_admin` when that verified identity signs
+in; it never revokes roles. After the named operator signs in successfully, remove the bootstrap
+entry and manage membership roles through an approved operational change with an audit record.
 
-Run migrations as a one-off release job before rolling API/worker instances:
+Run migrations as a separate owner role before rolling API/worker instances. Keep that credential
+disabled or inaccessible outside the release workflow, and do not use the migration owner in
+`DATABASE_URL` at runtime:
 
 ```bash
 npm run build
-DATABASE_URL=postgresql://... npm run migrate
+DATABASE_URL=postgresql://migration-owner@... npm run migrate
+MIGRATION_DATABASE_URL=postgresql://migration-owner@... \
+  RUNTIME_DATABASE_ROLE=recruiting_os_runtime npm run grant:runtime
 ```
+
+The grant command refuses an owner, superuser, or RLS-bypass target, removes public schema-create
+access, applies the required runtime/default privileges, and must run after each migration. Keep the
+owner and runtime credentials in separate secret-manager entries. This separation lets narrowly
+scoped security-definer functions perform cross-tenant session lookup, fair queue leasing, and
+maintenance while ordinary runtime SQL remains constrained by RLS.
 
 ## Verification
 

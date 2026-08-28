@@ -39,6 +39,16 @@ export class SqliteAuthRepository implements AuthRepository {
         values(?,?,?,'[]',?,?) on conflict(tenant_id,user_id) do nothing`,
         )
         .run(tenantId, userId, JSON.stringify(defaultRoles), now, now);
+      if (defaultRoles.includes('platform_admin')) {
+        const membership = this.store.db
+          .prepare('select roles from memberships where tenant_id=? and user_id=?')
+          .get(tenantId, userId) as { roles: string };
+        const roles = new Set(parseJsonSafe<Role[]>(membership.roles, []));
+        roles.add('platform_admin');
+        this.store.db
+          .prepare('update memberships set roles=?,updated_at=? where tenant_id=? and user_id=?')
+          .run(JSON.stringify([...roles]), now, tenantId, userId);
+      }
     });
     return userId;
   }
