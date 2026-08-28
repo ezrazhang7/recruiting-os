@@ -7,7 +7,9 @@ export class InstagramConnector {
     private token: string,
     private igUserId: string,
     private apiVersion = 'v24.0',
-    private http: HttpClient = new ProviderHttpClient(new Set(['graph.facebook.com'])).fetch,
+    private http: HttpClient = new ProviderHttpClient({
+      allowedHosts: new Set(['graph.facebook.com']),
+    }).fetch,
   ) {}
   private async get(url: string): Promise<any> {
     const r = await this.http(url);

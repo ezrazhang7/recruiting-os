@@ -15,7 +15,9 @@ export class LinkedInConnector {
   constructor(
     private token: string,
     private version = '202608',
-    private http: HttpClient = new ProviderHttpClient(new Set(['api.linkedin.com'])).fetch,
+    private http: HttpClient = new ProviderHttpClient({
+      allowedHosts: new Set(['api.linkedin.com']),
+    }).fetch,
   ) {}
   private headers() {
     return {

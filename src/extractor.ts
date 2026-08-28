@@ -157,7 +157,11 @@ export class OpenAIExtractor {
   constructor(
     private apiKey: string,
     private model = 'gpt-5-mini',
-    private http: HttpClient = new ProviderHttpClient(new Set(['api.openai.com']), 30_000, 3).fetch,
+    private http: HttpClient = new ProviderHttpClient({
+      allowedHosts: new Set(['api.openai.com']),
+      timeoutMs: 30_000,
+      maxAttempts: 3,
+    }).fetch,
   ) {}
   async extract(source: SourceItem): Promise<ExtractionResult> {
     if (!this.apiKey) return heuristicExtract(source);

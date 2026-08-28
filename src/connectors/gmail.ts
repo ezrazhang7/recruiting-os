@@ -14,7 +14,9 @@ export class GmailConnector {
   constructor(
     private token: string,
     private userId = 'me',
-    private http: HttpClient = new ProviderHttpClient(new Set(['gmail.googleapis.com'])).fetch,
+    private http: HttpClient = new ProviderHttpClient({
+      allowedHosts: new Set(['gmail.googleapis.com']),
+    }).fetch,
   ) {}
   private async req(path: string, init?: RequestInit): Promise<any> {
     const r = await this.http(

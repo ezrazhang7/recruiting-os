@@ -1,5 +1,6 @@
 import { Agent, fetch as undiciFetch } from 'undici';
 import { resolvePublicHttpTarget } from '../../url';
+import { boundedResponse } from './bounded-response';
 
 export interface SafeHttpOptions {
   timeoutMs?: number;
@@ -66,20 +67,11 @@ export class SafeHttpClient {
           current = new URL(location, current);
           continue;
         }
-        const declared = Number(response.headers.get('content-length') ?? 0);
-        if (declared > this.maxResponseBytes) throw new Error('Response exceeds size limit');
-        const body = await this.readLimited(response.body);
-        const arrayBuffer = body.buffer.slice(
-          body.byteOffset,
-          body.byteOffset + body.byteLength,
-        ) as ArrayBuffer;
-        const result = new Response(arrayBuffer, {
-          status: response.status,
-          statusText: response.statusText,
-          headers: response.headers as unknown as HeadersInit,
-        });
-        Object.defineProperty(result, 'url', { value: current.toString() });
-        return result;
+        return await boundedResponse(
+          response as unknown as Response,
+          this.maxResponseBytes,
+          current.toString(),
+        );
       } finally {
         clearTimeout(timer);
         await agent.close();
@@ -87,29 +79,4 @@ export class SafeHttpClient {
     }
     throw new Error('Too many redirects');
   };
-  private async readLimited(stream: any): Promise<Uint8Array> {
-    if (!stream) return new Uint8Array();
-    const reader = stream.getReader();
-    const chunks: Uint8Array[] = [];
-    let length = 0;
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = value as Uint8Array;
-        length += chunk.byteLength;
-        if (length > this.maxResponseBytes) throw new Error('Response exceeds size limit');
-        chunks.push(chunk);
-      }
-    } finally {
-      reader.releaseLock();
-    }
-    const output = new Uint8Array(length);
-    let offset = 0;
-    for (const chunk of chunks) {
-      output.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return output;
-  }
 }

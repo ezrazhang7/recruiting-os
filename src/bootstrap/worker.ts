@@ -20,6 +20,7 @@ import {
 } from '../application/connectors/connector-sync-scheduler';
 import { z } from 'zod';
 import { JobLeaseHeartbeat } from '../application/queue/job-lease-heartbeat';
+import { ProviderHttpClient } from '../infrastructure/outbound-http/provider-http-client';
 
 const connectorSyncPayloadSchema = z.object({
   provider: z.enum(['gmail', 'groupme', 'instagram', 'linkedin']),
@@ -37,9 +38,32 @@ async function main() {
   const web = new WebConnector(
     new SafeHttpClient({ maxResponseBytes: config.limits.fetchBytes }).fetch,
   );
+  const providerHttp = {
+    gmail: new ProviderHttpClient({
+      allowedHosts: new Set(['gmail.googleapis.com']),
+      maxResponseBytes: config.limits.providerResponseBytes,
+    }).fetch,
+    groupme: new ProviderHttpClient({
+      allowedHosts: new Set(['api.groupme.com']),
+      maxResponseBytes: config.limits.providerResponseBytes,
+    }).fetch,
+    instagram: new ProviderHttpClient({
+      allowedHosts: new Set(['graph.facebook.com']),
+      maxResponseBytes: config.limits.providerResponseBytes,
+    }).fetch,
+    linkedin: new ProviderHttpClient({
+      allowedHosts: new Set(['api.linkedin.com']),
+      maxResponseBytes: config.limits.providerResponseBytes,
+    }).fetch,
+    openai: new ProviderHttpClient({
+      allowedHosts: new Set(['api.openai.com']),
+      timeoutMs: 30_000,
+      maxResponseBytes: config.limits.providerResponseBytes,
+    }).fetch,
+  };
   const ingestion = new IngestionService(
     dependencies.repository,
-    new OpenAIExtractor(config.openai.apiKey, config.openai.model),
+    new OpenAIExtractor(config.openai.apiKey, config.openai.model, providerHttp.openai),
     web,
   );
   const credentials = new RefreshingCredentialService(
@@ -105,6 +129,7 @@ async function main() {
           const connector = new GmailConnector(
             credential.accessToken,
             config.connectorRuntime.gmailUserId,
+            providerHttp.gmail,
           );
           sources = await connector.synchronize(
             dependencies.repository,
@@ -114,12 +139,10 @@ async function main() {
           );
         } else if (payload.provider === 'groupme') {
           if (!payload.scope) throw new Error('GroupMe sync requires a group ID scope');
-          sources = await new GroupMeConnector(credential.accessToken).syncGroup(
-            dependencies.repository,
-            payload.organizationId,
-            payload.scope,
-            job.tenantId,
-          );
+          sources = await new GroupMeConnector(
+            credential.accessToken,
+            providerHttp.groupme,
+          ).syncGroup(dependencies.repository, payload.organizationId, payload.scope, job.tenantId);
         } else if (payload.provider === 'instagram') {
           if (!organization.instagramHandle || !config.connectorRuntime.metaIgUserId)
             throw new Error('Instagram organization handle or META_IG_USER_ID is missing');
@@ -128,6 +151,7 @@ async function main() {
               credential.accessToken,
               config.connectorRuntime.metaIgUserId,
               config.connectorRuntime.metaApiVersion,
+              providerHttp.instagram,
             ).sourcesForOrganization(payload.organizationId, organization.instagramHandle)
           ).sources;
         } else if (payload.provider === 'linkedin') {
@@ -135,6 +159,7 @@ async function main() {
           const connector = new LinkedInConnector(
             credential.accessToken,
             config.connectorRuntime.linkedinVersion,
+            providerHttp.linkedin,
           );
           const urn = await connector.resolveOrganizationUrn(organization.linkedinUrl);
           sources = await connector.posts(payload.organizationId, urn);

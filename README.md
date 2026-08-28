@@ -12,7 +12,7 @@ This repository contains production-oriented application code, but a deployment 
 - Immutable logical sources and content-addressed source versions. Failed extraction remains retryable; changed content at the same URL creates a new version; unchanged content is a no-op.
 - Evidence resolver with authority/recency rules, IANA `America/New_York` time handling, date precision, policy versioning, and audited human overrides.
 - Postgres production repositories with tenant RLS, migrations, encrypted connector credentials, durable fair queues, renewable worker leases, crash recovery, retries, dead letters, cursor state, and shared rate limiting.
-- Workers for bounded URL/screenshot ingestion and durable recurring Gmail, GroupMe, Instagram, and LinkedIn sync. Provider calls use host allowlists, timeouts, retry/backoff, and circuit breaking; public URL fetches revalidate DNS and every redirect against SSRF policy.
+- Workers for bounded URL/screenshot ingestion and durable recurring Gmail, GroupMe, Instagram, and LinkedIn sync. Provider calls use host allowlists, request timeouts, bounded streamed responses, standards-correct retry/backoff, and worker-wide circuit breaking; public URL fetches revalidate DNS and every redirect against SSRF policy.
 - Accessible student UI and evidence/admin controls served as same-origin assets. Student DTOs omit internal tenant and evidence data.
 - Structured redacted logs, request IDs, protected Prometheus-format API/queue metrics, health/readiness probes, immutable container deployment templates, and backup/recovery runbooks.
 - Versioned consent for private connectors/screenshots and an executable retention job that redacts expired private evidence and terminal job payloads.

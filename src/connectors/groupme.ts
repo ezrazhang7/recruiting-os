@@ -13,7 +13,9 @@ export function groupMeOAuthUrl(clientId: string, redirectUri?: string): string 
 export class GroupMeConnector {
   constructor(
     private token: string,
-    private http: HttpClient = new ProviderHttpClient(new Set(['api.groupme.com'])).fetch,
+    private http: HttpClient = new ProviderHttpClient({
+      allowedHosts: new Set(['api.groupme.com']),
+    }).fetch,
   ) {}
   private async get(path: string): Promise<any> {
     const r = await this.http(

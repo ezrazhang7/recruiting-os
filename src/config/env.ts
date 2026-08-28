@@ -27,6 +27,12 @@ const schema = z.object({
   MAX_REQUEST_BYTES: z.coerce.number().int().min(1_024).max(20_000_000).default(1_000_000),
   MAX_SCREENSHOT_BYTES: z.coerce.number().int().min(1_024).max(20_000_000).default(5_000_000),
   MAX_FETCH_BYTES: z.coerce.number().int().min(1_024).max(20_000_000).default(2_000_000),
+  MAX_PROVIDER_RESPONSE_BYTES: z.coerce
+    .number()
+    .int()
+    .min(1_024)
+    .max(20_000_000)
+    .default(6_000_000),
   RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10_000).default(120),
   AUTH_IP_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(10).max(100_000).default(2_000),
   AUTHENTICATED_IP_RATE_LIMIT_PER_MINUTE: z.coerce
@@ -118,6 +124,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
       requestBytes: value.MAX_REQUEST_BYTES,
       screenshotBytes: value.MAX_SCREENSHOT_BYTES,
       fetchBytes: value.MAX_FETCH_BYTES,
+      providerResponseBytes: value.MAX_PROVIDER_RESPONSE_BYTES,
       requestsPerMinute: value.RATE_LIMIT_PER_MINUTE,
       authIpRequestsPerMinute: value.AUTH_IP_RATE_LIMIT_PER_MINUTE,
       authenticatedIpRequestsPerMinute: value.AUTHENTICATED_IP_RATE_LIMIT_PER_MINUTE,
