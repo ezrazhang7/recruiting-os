@@ -11,6 +11,7 @@ import { registerAuthRoutes } from './routes/auth';
 import { registerConnectorRoutes } from './routes/connectors';
 import { registerPublicRoutes } from './routes/public';
 import { registerRecruitingRoutes } from './routes/recruiting';
+import { registerPrivacyRoutes } from './routes/privacy';
 import type { AppDependencies } from './types';
 
 export type { AppDependencies } from './types';
@@ -186,6 +187,7 @@ export async function buildApp(dependencies: AppDependencies): Promise<FastifyIn
   registerAuthRoutes(app, runtimeDependencies, sessionCookie);
   registerConnectorRoutes(app, runtimeDependencies, sessionCookie);
   registerRecruitingRoutes(app, runtimeDependencies);
+  registerPrivacyRoutes(app, runtimeDependencies, sessionCookie);
   return app;
 }
 

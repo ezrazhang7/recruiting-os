@@ -49,6 +49,7 @@ export interface MediaRef {
 export interface SourceItem {
   id: string;
   tenantId?: string;
+  contributorUserId?: string;
   organizationId: string;
   sourceType: SourceType;
   externalId?: string;
@@ -110,7 +111,7 @@ export interface OpportunityOverride {
   tenantId: string;
   opportunityId: string;
   organizationId: string;
-  actorId: string;
+  actorId?: string;
   patch: Partial<Pick<Opportunity, 'title' | 'deadlineAt' | 'startsAt' | 'url' | 'stale'>>;
   reason: string;
   createdAt: string;

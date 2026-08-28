@@ -10,6 +10,7 @@ import { Store } from '../src/store';
 import { EncryptedCredentialVault } from '../src/infrastructure/credentials/encrypted-credential-vault';
 import { SqliteCredentialRepository } from '../src/infrastructure/credentials/sqlite-credential-repository';
 import { ProviderOAuthService } from '../src/infrastructure/auth/provider-oauth-service';
+import { SqlitePrivacyRepository } from '../src/infrastructure/privacy/sqlite-privacy-repository';
 
 async function fixture(overrides: NodeJS.ProcessEnv = {}) {
   const config = loadConfig({
@@ -30,6 +31,7 @@ async function fixture(overrides: NodeJS.ProcessEnv = {}) {
     config.auth.credentialKeyVersion,
   );
   const sessions = new SessionService(auth, 3600);
+  const privacyRepository = new SqlitePrivacyRepository(store);
   const app = await buildApp({
     config,
     repository: store,
@@ -44,6 +46,7 @@ async function fixture(overrides: NodeJS.ProcessEnv = {}) {
         redirectUri: 'https://app.example/api/connectors/gmail/callback',
       },
     }),
+    privacyRepository,
   });
   return { app, store, credentialVault };
 }
@@ -159,6 +162,8 @@ test('student interface and same-origin assets are publicly renderable', async (
   assert.equal(page.statusCode, 200);
   assert.match(page.body, /Find the right club before the deadline/);
   assert.match(page.body, /Private raw messages and screenshots are retained for up to 90 days/);
+  assert.match(page.body, /Download my data/);
+  assert.match(page.body, /Delete my account/);
   assert.match(page.headers['content-security-policy'] ?? '', /script-src 'self'/);
   assert.equal((await app.inject({ url: '/assets/app.js' })).statusCode, 200);
   assert.equal((await app.inject({ url: '/assets/app.css' })).statusCode, 200);
@@ -365,6 +370,127 @@ test('connecting a private provider requires versioned explicit consent', async 
   });
   assert.equal(accepted.statusCode, 200, accepted.body);
   assert.match(accepted.json().authorizationUrl, /^https:\/\/accounts\.google\.com\//);
+  await app.close();
+  await store.close();
+});
+
+test('account export and erasure preserve independently shared evidence', async () => {
+  const { app, store, credentialVault } = await fixture();
+  const first = await login(app, 'first-privacy@unc.edu');
+  const second = await login(app, 'second-privacy@unc.edu');
+  const users = store.db
+    .prepare('select id,email from users where email in (?,?) order by email')
+    .all('first-privacy@unc.edu', 'second-privacy@unc.edu') as Array<{
+    id: string;
+    email: string;
+  }>;
+  const firstUser = users.find((user) => user.email === 'first-privacy@unc.edu')!;
+  const secondUser = users.find((user) => user.email === 'second-privacy@unc.edu')!;
+  await store.upsertOrganization(
+    { id: 'privacy-club', name: 'Privacy Club', school: 'UNC' },
+    'unc',
+  );
+
+  const shared = {
+    id: 'shared-private-message',
+    tenantId: 'unc',
+    organizationId: 'privacy-club',
+    sourceType: 'gmail' as const,
+    externalId: 'shared-message',
+    rawText: 'shared recruiting content',
+    media: [],
+    fetchedAt: new Date().toISOString(),
+  };
+  const sharedVersion = await store.stageSource(
+    { ...shared, contributorUserId: firstUser.id },
+    'unc',
+  );
+  await store.stageSource({ ...shared, contributorUserId: secondUser.id }, 'unc');
+  const soleVersion = await store.stageSource(
+    {
+      ...shared,
+      id: 'sole-private-message',
+      externalId: 'sole-message',
+      rawText: 'sole contributor private content',
+      contributorUserId: firstUser.id,
+    },
+    'unc',
+  );
+  await credentialVault.put('unc', firstUser.id, 'gmail', {
+    accessToken: 'must-never-be-exported',
+    scopes: ['gmail.readonly'],
+  });
+  await new SqliteJobQueue(store).enqueue({
+    tenantId: 'unc',
+    type: 'connector.sync',
+    idempotencyKey: 'privacy-user-job',
+    payload: { userId: firstUser.id, provider: 'gmail', organizationId: 'privacy-club' },
+  });
+  await store.setConnectorState('gmail', firstUser.id, 'cursor', {}, 'unc', firstUser.id);
+
+  const exported = await app.inject({ url: '/api/me/export', headers: { cookie: first.cookie } });
+  assert.equal(exported.statusCode, 200, exported.body);
+  assert.match(exported.headers['content-disposition'] ?? '', /attachment/);
+  assert.equal(exported.json().contributions.length, 2);
+  assert.equal(exported.json().connectors[0].provider, 'gmail');
+  assert.doesNotMatch(exported.body, /must-never-be-exported/);
+  assert.doesNotMatch(exported.body, /sole contributor private content/);
+
+  const rejected = await app.inject({
+    method: 'DELETE',
+    url: '/api/me',
+    headers: { cookie: first.cookie, 'x-csrf-token': first.csrf },
+    payload: { confirmation: 'delete' },
+  });
+  assert.equal(rejected.statusCode, 422);
+  const erased = await app.inject({
+    method: 'DELETE',
+    url: '/api/me',
+    headers: { cookie: first.cookie, 'x-csrf-token': first.csrf },
+    payload: { confirmation: 'DELETE_MY_ACCOUNT' },
+  });
+  assert.equal(erased.statusCode, 202, erased.body);
+  assert.equal(erased.json().deleted.privateSourceVersionsDeleted, 1);
+  assert.equal(erased.json().deleted.contributionsRemoved, 2);
+  assert.equal(erased.json().reconciliationJobs.length, 1);
+  assert.deepEqual(erased.json().reconciliationJobs, erased.json().deleted.reconciliationJobIds);
+  assert.ok(await store.getSource(sharedVersion.versionId, 'unc'));
+  assert.equal(await store.getSource(soleVersion.versionId, 'unc'), undefined);
+  assert.equal(
+    (
+      store.db
+        .prepare('select count(*) as count from source_version_contributors where user_id=?')
+        .get(secondUser.id) as { count: number }
+    ).count,
+    1,
+  );
+  assert.equal(store.db.prepare('select 1 from users where id=?').get(firstUser.id), undefined);
+  assert.equal(await credentialVault.get('unc', firstUser.id, 'gmail'), undefined);
+  assert.deepEqual(await store.getConnectorState('gmail', firstUser.id, 'unc'), { metadata: {} });
+  const privacyAudit = store.db
+    .prepare("select actor_id from audit_events where action='privacy.erase'")
+    .get() as { actor_id: string | null };
+  assert.equal(privacyAudit.actor_id, null);
+  assert.equal(
+    (
+      store.db
+        .prepare("select count(*) as count from jobs where type='privacy.reconcile'")
+        .get() as { count: number }
+    ).count,
+    1,
+  );
+  await assert.rejects(
+    store.setConnectorState('gmail', firstUser.id, 'late-cursor', {}, 'unc', firstUser.id),
+    /FOREIGN KEY constraint failed/,
+  );
+  assert.equal(
+    (await app.inject({ url: '/api/dashboard', headers: { cookie: first.cookie } })).statusCode,
+    401,
+  );
+  assert.equal(
+    (await app.inject({ url: '/api/dashboard', headers: { cookie: second.cookie } })).statusCode,
+    200,
+  );
   await app.close();
   await store.close();
 });

@@ -16,6 +16,9 @@ This repository contains production-oriented application code, but a deployment 
 - Accessible student UI and evidence/admin controls served as same-origin assets. Student DTOs omit internal tenant and evidence data.
 - Structured redacted logs, request IDs, protected Prometheus-format API/queue metrics, health/readiness probes, immutable container deployment templates, and backup/recovery runbooks.
 - Versioned consent for private connectors/screenshots and an executable retention job that redacts expired private evidence and terminal job payloads.
+- User-scoped connector cursors, per-version contributor provenance, metadata-only self-service
+  exports, and account erasure that deletes sole-contributor private evidence while preserving
+  independently shared evidence and durably reconciling derived opportunities.
 
 The module direction is `domain → application ports → infrastructure adapters → bootstraps`. Domain and resolver code do not depend on Fastify, SQLite, Postgres, or provider SDKs.
 
@@ -80,6 +83,10 @@ fixture.
 ## API surface
 
 Public routes are limited to the UI assets, liveness/readiness, and OIDC/development-auth entry points. Authenticated routes cover the student dashboard, organizations, connector OAuth/status/revoke/sync, bounded ingestion queueing, admin evidence, reviewed opportunity overrides, and administrator metrics. The machine `/metrics` endpoint requires a constant-time-checked bearer credential. Mutations require CSRF and idempotent queue jobs.
+
+Authenticated students can also download their metadata-only account export and request account
+erasure from the privacy panel. Account deletion revokes the active session and requires explicit
+confirmation plus CSRF protection.
 
 ## Data handling and incident response
 

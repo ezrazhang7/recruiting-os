@@ -69,3 +69,17 @@ or fails. It redacts raw private source versions after 90 days and terminal job 
 days, clears expired sessions/rate-limit buckets, deletes credentials revoked for 30 days, and
 retains audit events for 365 days. Investigate all SSRF blocks and repeated cross-tenant
 authorization failures.
+
+## Privacy requests
+
+Users can download a metadata-only export with `GET /api/me/export` and erase their tenant account
+with CSRF-protected `DELETE /api/me` after supplying the exact confirmation phrase. Erasure deletes
+credentials, sessions, user-owned jobs/cursors, and sole-contributor private evidence, then queues
+high-priority `privacy.reconcile` jobs. Verify those jobs complete and that the user can no longer
+authenticate. Shared private evidence remains only when another tenant member independently
+contributed the identical source version; public evidence is disassociated rather than deleted.
+
+The privacy owner must review exceptional tenant-wide exports and legal holds separately. Never
+send OAuth tokens or raw private evidence in the self-service export. Migration 007 intentionally
+discards legacy Gmail/GroupMe cursors because they were not user-scoped; expect one bounded resync
+per connected account after rollout.

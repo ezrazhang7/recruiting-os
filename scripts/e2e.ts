@@ -85,6 +85,20 @@ async function main(): Promise<void> {
     const dashboard = await fetch(`${baseUrl}/api/dashboard`, { headers: { cookie } });
     assert.equal(dashboard.status, 200);
     assert.equal(((await dashboard.json()) as any).organizations[0].name, 'E2E Club');
+    const exported = await fetch(`${baseUrl}/api/me/export`, { headers: { cookie } });
+    assert.equal(exported.status, 200);
+    assert.match(exported.headers.get('content-disposition') ?? '', /account-export/);
+    const erased = await fetch(`${baseUrl}/api/me`, {
+      method: 'DELETE',
+      headers: {
+        'content-type': 'application/json',
+        cookie,
+        'x-csrf-token': body.csrfToken,
+      },
+      body: JSON.stringify({ confirmation: 'DELETE_MY_ACCOUNT' }),
+    });
+    assert.equal(erased.status, 202, await erased.text());
+    assert.equal((await fetch(`${baseUrl}/api/dashboard`, { headers: { cookie } })).status, 401);
   } finally {
     if (child.exitCode === null) {
       child.kill('SIGTERM');

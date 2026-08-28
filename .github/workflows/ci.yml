@@ -78,7 +78,7 @@ jobs:
             -e BACKUP_FILE=/tmp/recruiting-os.dump \
             -e RESTORE_CONFIRM=RESTORE_TO_EMPTY_DATABASE \
             "$POSTGRES_CONTAINER" sh /tmp/recruiting-restore.sh
-          for table in schema_migrations tenants users memberships organizations sources source_versions claims opportunities opportunity_overrides resolver_policies connector_state credentials sessions jobs tenant_queue_state rate_limit_buckets audit_events; do
+          for table in schema_migrations tenants users memberships organizations sources source_versions source_version_contributors claims opportunities opportunity_overrides resolver_policies connector_state credentials sessions jobs tenant_queue_state rate_limit_buckets audit_events; do
             source_count=$(docker exec -e PGPASSWORD=postgres "$POSTGRES_CONTAINER" \
               psql -U postgres -d recruiting_os -Atc "select count(*) from $table")
             restored_count=$(docker exec -e PGPASSWORD=postgres "$POSTGRES_CONTAINER" \

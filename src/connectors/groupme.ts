@@ -38,8 +38,10 @@ export class GroupMeConnector {
     orgId: string,
     groupId: string,
     tenantId?: string,
+    contributorUserId?: string,
   ): Promise<SourceItem[]> {
-    const state = await store.getConnectorState('groupme', groupId, tenantId);
+    const stateScope = contributorUserId ? `${contributorUserId}:${groupId}` : groupId;
+    const state = await store.getConnectorState('groupme', stateScope, tenantId);
     const msgs = await this.messages(groupId, state.cursor);
     const out: SourceItem[] = [];
     const sorted = msgs.slice().sort((a, b) => Number(a.created_at) - Number(b.created_at));
@@ -62,7 +64,14 @@ export class GroupMeConnector {
       });
     }
     if (sorted.length)
-      await store.setConnectorState('groupme', groupId, String(sorted.at(-1).id), {}, tenantId);
+      await store.setConnectorState(
+        'groupme',
+        stateScope,
+        String(sorted.at(-1).id),
+        {},
+        tenantId,
+        contributorUserId,
+      );
     return out;
   }
 }

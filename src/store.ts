@@ -80,9 +80,10 @@ create index if not exists opportunity_overrides_active
   on opportunity_overrides(tenant_id, opportunity_id, created_at desc);
 create table if not exists connector_state (
   tenant_id text not null, connector text not null, scope text not null, cursor text,
-  metadata text not null default '{}', updated_at text not null,
+  metadata text not null default '{}', owner_user_id text, updated_at text not null,
   primary key(tenant_id, connector, scope),
-  foreign key (tenant_id) references tenants(id) on delete cascade
+  foreign key (tenant_id) references tenants(id) on delete cascade,
+  foreign key (tenant_id,owner_user_id) references memberships(tenant_id,user_id) on delete cascade
 );
 create table if not exists audit_events (
   id text primary key, tenant_id text not null, actor_id text, action text not null,
@@ -126,6 +127,16 @@ create table if not exists credentials (
   expires_at text, revoked_at text, created_at text not null, updated_at text not null,
   unique(tenant_id,user_id,provider)
 );
+create table if not exists source_version_contributors (
+  tenant_id text not null references tenants(id) on delete cascade,
+  source_version_id text not null references source_versions(id) on delete cascade,
+  user_id text not null,
+  created_at text not null,
+  primary key(tenant_id,source_version_id,user_id),
+  foreign key(tenant_id,user_id) references memberships(tenant_id,user_id) on delete cascade
+);
+create index if not exists source_version_contributors_user
+  on source_version_contributors(tenant_id,user_id,created_at desc);
 `;
 
 function contentHash(source: SourceItem): string {
@@ -157,6 +168,11 @@ export class Store implements RecruitingRepository {
     this.db = new DatabaseSync(path);
     this.db.exec('pragma foreign_keys=on; pragma journal_mode=wal; pragma busy_timeout=5000;');
     this.db.exec(schema);
+    const connectorColumns = this.db.prepare('pragma table_info(connector_state)').all() as Array<{
+      name: string;
+    }>;
+    if (!connectorColumns.some((column) => column.name === 'owner_user_id'))
+      this.db.exec('alter table connector_state add column owner_user_id text');
     this.ensureTenant(defaultTenantId, 'Default tenant');
   }
 
@@ -294,6 +310,20 @@ export class Store implements RecruitingRepository {
           now,
         );
 
+      if (source.contributorUserId) {
+        const membership = this.db
+          .prepare('select 1 from memberships where tenant_id=? and user_id=?')
+          .get(tenantId, source.contributorUserId);
+        if (!membership) throw new Error('Source contributor is not a tenant member');
+        this.db
+          .prepare(
+            `insert or ignore into source_version_contributors(
+              tenant_id,source_version_id,user_id,created_at
+            ) values(?,?,?,?)`,
+          )
+          .run(tenantId, versionId, source.contributorUserId, now);
+      }
+
       const row = this.db
         .prepare('select status,attempt_count from source_versions where tenant_id=? and id=?')
         .get(tenantId, versionId) as { status: SourceVersionStatus; attempt_count: number };
@@ -379,6 +409,7 @@ export class Store implements RecruitingRepository {
     return {
       id: String(row.version_id),
       tenantId: String(row.tenant_id),
+      contributorUserId: undefined,
       organizationId: String(row.organization_id),
       sourceType: String(row.source_type) as SourceType,
       externalId: row.external_id ? String(row.external_id) : undefined,
@@ -523,6 +554,7 @@ export class Store implements RecruitingRepository {
     override: OpportunityOverride,
     tenantId = override.tenantId ?? this.defaultTenantId,
   ): Promise<void> {
+    if (!override.actorId) throw new Error('Opportunity override actor is required');
     this.db
       .prepare(
         `insert into opportunity_overrides(
@@ -556,7 +588,7 @@ export class Store implements RecruitingRepository {
       tenantId: String(row.tenant_id),
       opportunityId: String(row.opportunity_id),
       organizationId: String(row.organization_id),
-      actorId: String(row.actor_id),
+      actorId: row.actor_id ? String(row.actor_id) : undefined,
       patch: parseJsonSafe(String(row.patch), {}),
       reason: String(row.reason),
       createdAt: String(row.created_at),
@@ -588,14 +620,25 @@ export class Store implements RecruitingRepository {
     cursor?: string,
     metadata: Record<string, unknown> = {},
     tenantId = this.defaultTenantId,
+    ownerUserId?: string,
   ): Promise<void> {
     this.db
       .prepare(
-        `insert into connector_state(tenant_id,connector,scope,cursor,metadata,updated_at)
-      values(?,?,?,?,?,?) on conflict(tenant_id,connector,scope) do update set
-      cursor=excluded.cursor,metadata=excluded.metadata,updated_at=excluded.updated_at`,
+        `insert into connector_state(
+          tenant_id,connector,scope,cursor,metadata,owner_user_id,updated_at
+        ) values(?,?,?,?,?,?,?) on conflict(tenant_id,connector,scope) do update set
+        cursor=excluded.cursor,metadata=excluded.metadata,
+        owner_user_id=excluded.owner_user_id,updated_at=excluded.updated_at`,
       )
-      .run(tenantId, connector, scope, cursor ?? null, JSON.stringify(metadata), nowIso());
+      .run(
+        tenantId,
+        connector,
+        scope,
+        cursor ?? null,
+        JSON.stringify(metadata),
+        ownerUserId ?? null,
+        nowIso(),
+      );
   }
 
   async getSourceVersionStatus(

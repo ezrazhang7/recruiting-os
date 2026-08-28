@@ -21,6 +21,7 @@ import {
 import { z } from 'zod';
 import { JobLeaseHeartbeat } from '../application/queue/job-lease-heartbeat';
 import { ProviderHttpClient } from '../infrastructure/outbound-http/provider-http-client';
+import { resolveOrganization } from '../resolver';
 
 const connectorSyncPayloadSchema = z.object({
   provider: z.enum(['gmail', 'groupme', 'instagram', 'linkedin']),
@@ -94,9 +95,10 @@ async function main() {
     let recurringPayload: ConnectorSyncPayload | undefined;
     try {
       if (job.type === 'ingest.url') {
-        const payload = job.payload as { organizationId: string; url: string };
+        const payload = job.payload as { organizationId: string; url: string; userId: string };
         const fetched = await web.fetchSource(payload.organizationId, payload.url);
         fetched.source.tenantId = job.tenantId;
+        fetched.source.contributorUserId = payload.userId;
         await ingestion.ingest(fetched.source, { followLinks: true, maxDepth: 2 });
       } else if (job.type === 'ingest.screenshot') {
         const payload = job.payload as {
@@ -106,10 +108,20 @@ async function main() {
           note?: string;
           url?: string;
           publishedAt?: string;
+          userId: string;
         };
         const source = screenshotSource(payload.organizationId, payload);
         source.tenantId = job.tenantId;
+        source.contributorUserId = payload.userId;
         await ingestion.ingest(source, { followLinks: true, maxDepth: 2 });
+      } else if (job.type === 'privacy.reconcile') {
+        const payload = z.object({ organizationId: z.string().min(1) }).parse(job.payload);
+        await resolveOrganization(
+          dependencies.repository,
+          payload.organizationId,
+          new Date(),
+          job.tenantId,
+        );
       } else if (job.type === 'connector.sync') {
         const payload: ConnectorSyncPayload = connectorSyncPayloadSchema.parse(job.payload);
         const credential = await credentials.getValid(
@@ -130,6 +142,8 @@ async function main() {
             credential.accessToken,
             config.connectorRuntime.gmailUserId,
             providerHttp.gmail,
+            payload.userId,
+            payload.userId,
           );
           sources = await connector.synchronize(
             dependencies.repository,
@@ -142,7 +156,13 @@ async function main() {
           sources = await new GroupMeConnector(
             credential.accessToken,
             providerHttp.groupme,
-          ).syncGroup(dependencies.repository, payload.organizationId, payload.scope, job.tenantId);
+          ).syncGroup(
+            dependencies.repository,
+            payload.organizationId,
+            payload.scope,
+            job.tenantId,
+            payload.userId,
+          );
         } else if (payload.provider === 'instagram') {
           if (!organization.instagramHandle || !config.connectorRuntime.metaIgUserId)
             throw new Error('Instagram organization handle or META_IG_USER_ID is missing');
@@ -166,6 +186,7 @@ async function main() {
         }
         for (const source of sources) {
           source.tenantId = job.tenantId;
+          source.contributorUserId = payload.userId;
           await ingestion.ingest(source, { followLinks: true, maxDepth: 2 });
         }
         recurringPayload = payload;

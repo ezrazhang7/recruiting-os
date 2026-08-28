@@ -175,7 +175,7 @@ export function registerRecruitingRoutes(
       tenantId: principal.tenantId,
       type: 'ingest.url',
       idempotencyKey: idempotencyKey(request, body),
-      payload: body,
+      payload: { ...body, userId: principal.userId },
     });
     await auditLog?.write({
       tenantId: principal.tenantId,
@@ -206,7 +206,7 @@ export function registerRecruitingRoutes(
         ...body,
         base64: createHash('sha256').update(body.base64).digest('hex'),
       }),
-      payload: body,
+      payload: { ...body, userId: principal.userId },
     });
     await auditLog?.write({
       tenantId: principal.tenantId,

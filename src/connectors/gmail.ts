@@ -17,6 +17,8 @@ export class GmailConnector {
     private http: HttpClient = new ProviderHttpClient({
       allowedHosts: new Set(['gmail.googleapis.com']),
     }).fetch,
+    private stateScope = userId,
+    private ownerUserId?: string,
   ) {}
   private async req(path: string, init?: RequestInit): Promise<any> {
     const r = await this.http(
@@ -101,7 +103,7 @@ export class GmailConnector {
     resolveOrg: (msg: any) => string | undefined,
     tenantId?: string,
   ): Promise<SourceItem[]> {
-    const state = await store.getConnectorState('gmail', this.userId, tenantId);
+    const state = await store.getConnectorState('gmail', this.stateScope, tenantId);
     if (!state.cursor)
       throw new Error('No Gmail history cursor. Call watch() and persist its historyId first.');
     let h: any;
@@ -129,10 +131,11 @@ export class GmailConnector {
     }
     await store.setConnectorState(
       'gmail',
-      this.userId,
+      this.stateScope,
       String(h.historyId ?? state.cursor),
       {},
       tenantId,
+      this.ownerUserId,
     );
     return out;
   }
@@ -150,7 +153,14 @@ export class GmailConnector {
       out.push(await this.toSource(orgId, message));
     }
     const profile = await this.req('/profile');
-    await store.setConnectorState('gmail', this.userId, String(profile.historyId), {}, tenantId);
+    await store.setConnectorState(
+      'gmail',
+      this.stateScope,
+      String(profile.historyId),
+      {},
+      tenantId,
+      this.ownerUserId,
+    );
     return out;
   }
 
@@ -160,7 +170,7 @@ export class GmailConnector {
     query: string,
     tenantId?: string,
   ): Promise<SourceItem[]> {
-    const state = await store.getConnectorState('gmail', this.userId, tenantId);
+    const state = await store.getConnectorState('gmail', this.stateScope, tenantId);
     if (!state.cursor) return this.initialize(store, orgId, query, tenantId);
     try {
       return await this.sync(store, () => orgId, tenantId);

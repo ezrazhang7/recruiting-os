@@ -42,6 +42,7 @@ export interface RecruitingRepository {
     cursor?: string,
     metadata?: Record<string, unknown>,
     tenantId?: string,
+    ownerUserId?: string,
   ): Promise<void>;
   close(): Promise<void>;
 }

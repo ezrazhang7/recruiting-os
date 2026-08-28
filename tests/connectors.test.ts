@@ -39,6 +39,22 @@ test('GroupMe incremental sync uses cursor and returns image', async () => {
   await st.close();
 });
 
+test('GroupMe cursors are isolated by contributing user', async () => {
+  const requested: string[] = [];
+  const http: any = async (input: any) => {
+    requested.push(String(input));
+    return jsonResponse({ response: { messages: [] } });
+  };
+  const st = new Store();
+  await st.setConnectorState('groupme', 'user-a:g1', 'a1');
+  await st.setConnectorState('groupme', 'user-b:g1', 'b1');
+  await new GroupMeConnector('tok', http).syncGroup(st, 'org', 'g1', undefined, 'user-a');
+  await new GroupMeConnector('tok', http).syncGroup(st, 'org', 'g1', undefined, 'user-b');
+  assert.match(requested[0]!, /after_id=a1/);
+  assert.match(requested[1]!, /after_id=b1/);
+  await st.close();
+});
+
 test('Gmail push decoder', () => {
   const g = new GmailConnector('x');
   const d = Buffer.from(JSON.stringify({ emailAddress: 'a@b.com', historyId: '42' })).toString(
@@ -92,6 +108,24 @@ test('Gmail synchronize recovers an expired history cursor with a bounded resync
   const sources = await new GmailConnector('x', 'me', http).synchronize(st, 'org', 'recruiting');
   assert.deepEqual(sources, []);
   assert.equal((await st.getConnectorState('gmail', 'me')).cursor, 'fresh');
+  await st.close();
+});
+
+test('Gmail cursors are isolated from the provider API user alias', async () => {
+  const st = new Store();
+  await st.setConnectorState('gmail', 'user-a', 'a1');
+  await st.setConnectorState('gmail', 'user-b', 'b1');
+  const requested: string[] = [];
+  const http: any = async (input: any) => {
+    requested.push(String(input));
+    return jsonResponse({ historyId: 'next', history: [] });
+  };
+  await new GmailConnector('x', 'me', http, 'user-a').sync(st, () => undefined);
+  await new GmailConnector('x', 'me', http, 'user-b').sync(st, () => undefined);
+  assert.match(requested[0]!, /startHistoryId=a1/);
+  assert.match(requested[1]!, /startHistoryId=b1/);
+  assert.equal((await st.getConnectorState('gmail', 'user-a')).cursor, 'next');
+  assert.equal((await st.getConnectorState('gmail', 'user-b')).cursor, 'next');
   await st.close();
 });
 

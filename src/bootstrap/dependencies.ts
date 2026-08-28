@@ -19,6 +19,9 @@ import { Pool, type PoolConfig } from 'pg';
 import type { RateLimiter } from '../application/ports/rate-limiter';
 import { PostgresRateLimiter } from '../infrastructure/rate-limit/postgres-rate-limiter';
 import { InMemoryRateLimiter } from '../infrastructure/rate-limit/in-memory-rate-limiter';
+import type { PrivacyRepository } from '../application/ports/privacy-repository';
+import { PostgresPrivacyRepository } from '../infrastructure/privacy/postgres-privacy-repository';
+import { SqlitePrivacyRepository } from '../infrastructure/privacy/sqlite-privacy-repository';
 
 export interface RuntimeDependencies {
   repository: RecruitingRepository;
@@ -27,6 +30,7 @@ export interface RuntimeDependencies {
   credentialVault: CredentialVault;
   auditLog: AuditLog;
   rateLimiter: RateLimiter;
+  privacyRepository: PrivacyRepository;
   close(): Promise<void>;
 }
 
@@ -65,6 +69,7 @@ export function createDependencies(
     );
     const auditLog = new PostgresAuditLog(pool);
     const rateLimiter = new PostgresRateLimiter(pool);
+    const privacyRepository = new PostgresPrivacyRepository(pool);
     return {
       repository,
       authRepository,
@@ -72,6 +77,7 @@ export function createDependencies(
       credentialVault,
       auditLog,
       rateLimiter,
+      privacyRepository,
       close: async () => {
         await Promise.all([
           repository.close(),
@@ -80,6 +86,7 @@ export function createDependencies(
           credentialRepository.close(),
           auditLog.close(),
           rateLimiter.close(),
+          privacyRepository.close(),
         ]);
         await pool.end();
       },
@@ -96,6 +103,7 @@ export function createDependencies(
     config.auth.credentialKeyVersion,
   );
   const auditLog = new SqliteAuditLog(repository);
+  const privacyRepository = new SqlitePrivacyRepository(repository);
   return {
     repository,
     authRepository,
@@ -103,12 +111,14 @@ export function createDependencies(
     credentialVault,
     auditLog,
     rateLimiter: new InMemoryRateLimiter(),
+    privacyRepository,
     close: async () => {
       await Promise.all([
         authRepository.close(),
         queue.close(),
         credentialRepository.close(),
         auditLog.close(),
+        privacyRepository.close(),
       ]);
       await repository.close();
     },

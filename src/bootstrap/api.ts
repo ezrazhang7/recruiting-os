@@ -35,6 +35,7 @@ async function main() {
     credentialVault: dependencies.credentialVault,
     providerOAuth: new ProviderOAuthService(config.providers),
     auditLog: dependencies.auditLog,
+    privacyRepository: dependencies.privacyRepository,
   });
   const shutdown = async (signal: string) => {
     app.log.info({ signal }, 'shutting down');

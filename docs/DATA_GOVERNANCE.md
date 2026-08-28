@@ -14,10 +14,20 @@ confidential. OAuth credentials and session secrets are classified as restricted
 - Default retention is 90 days for raw private source content and 30 days for failed job payloads;
   derived public opportunity data may be retained while current.
 - Support tenant export, correction, connector revocation, and deletion workflows.
-- Deletion requests remove private source versions, credentials, and sessions, then queue derived
-  data reconciliation.
+- A self-service account export contains identity, membership, connector metadata, contribution
+  metadata, and activity history. It never contains access/refresh tokens or raw private evidence.
+- Every source version records each tenant member who independently contributed that exact content.
+  Connector cursors are user-scoped so one account cannot consume another account's updates.
+- Account deletion removes that tenant membership, credentials, sessions, user-owned jobs and
+  cursors, and contributor links. A private Gmail, GroupMe, or screenshot version is deleted when
+  the requester was its last contributor; independently shared private evidence remains for the
+  remaining contributor. Public evidence remains without the contributor link.
+- Deletion queues reconciliation for every organization whose private evidence was removed.
+  Historical audit events and reviewed overrides remain for integrity but their actor link is
+  anonymized. The global identity row is deleted once it has no tenant memberships.
 - Production enablement requires named privacy and operational owners to approve this policy and
   confirm UNC-specific requirements.
 
 Users must consent before connecting Gmail or GroupMe or uploading screenshots containing other
-people's messages. The UI must explain the data collected, purpose, retention, and revocation path.
+people's messages. The UI explains the data collected, purpose, retention, export, revocation, and
+account-deletion paths.

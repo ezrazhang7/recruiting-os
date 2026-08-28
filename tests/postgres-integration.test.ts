@@ -233,3 +233,162 @@ test('Postgres adapters share one bounded pool per process', { skip: !adminUrl }
     await admin.end();
   }
 });
+
+test(
+  'Postgres account erasure is tenant-scoped and preserves shared private evidence',
+  { skip: !adminUrl },
+  async () => {
+    if (!adminUrl) return;
+    await migrate(adminUrl);
+    const admin = new Pool({ connectionString: adminUrl, max: 1 });
+    await admin.query(`do $$ begin
+    if not exists(select 1 from pg_roles where rolname='recruiting_os_test') then
+      create role recruiting_os_test login password 'test-only-password' nosuperuser nocreatedb nocreaterole;
+    end if;
+  end $$`);
+    await admin.query('grant connect on database recruiting_os to recruiting_os_test');
+    await admin.query('grant usage on schema public,app to recruiting_os_test');
+    await admin.query(
+      'grant select,insert,update,delete on all tables in schema public to recruiting_os_test',
+    );
+    await admin.query('grant usage,select on all sequences in schema public to recruiting_os_test');
+    await admin.query('grant execute on all functions in schema app to recruiting_os_test');
+    const appUrl = new URL(adminUrl);
+    appUrl.username = 'recruiting_os_test';
+    appUrl.password = 'test-only-password';
+    const config = loadConfig({
+      NODE_ENV: 'test',
+      DATABASE_DRIVER: 'postgres',
+      DATABASE_URL: appUrl.toString(),
+      DATABASE_POOL_SIZE: '3',
+      DEFAULT_TENANT_ID: 'privacy-tenant',
+    });
+    const dependencies = createDependencies(config, 'api');
+    const suffix = crypto.randomUUID();
+    try {
+      await dependencies.repository.upsertOrganization(
+        { id: 'privacy-org', name: 'Privacy Org', school: 'UNC' },
+        'privacy-tenant',
+      );
+      const firstIdentity = { issuer: 'https://privacy.example', subject: `first-${suffix}` };
+      const firstUser = await dependencies.authRepository.upsertIdentity(
+        firstIdentity,
+        'privacy-tenant',
+      );
+      assert.equal(
+        await dependencies.authRepository.upsertIdentity(firstIdentity, 'other-privacy-tenant'),
+        firstUser,
+      );
+      const secondUser = await dependencies.authRepository.upsertIdentity(
+        { issuer: 'https://privacy.example', subject: `second-${suffix}` },
+        'privacy-tenant',
+      );
+      const sharedSource = {
+        id: `shared-${suffix}`,
+        tenantId: 'privacy-tenant',
+        organizationId: 'privacy-org',
+        sourceType: 'gmail' as const,
+        externalId: `shared-${suffix}`,
+        rawText: 'shared private evidence',
+        media: [],
+        fetchedAt: new Date().toISOString(),
+      };
+      const sharedVersion = await dependencies.repository.stageSource({
+        ...sharedSource,
+        contributorUserId: firstUser,
+      });
+      await dependencies.repository.stageSource({
+        ...sharedSource,
+        contributorUserId: secondUser,
+      });
+      const soleVersion = await dependencies.repository.stageSource({
+        ...sharedSource,
+        id: `sole-${suffix}`,
+        externalId: `sole-${suffix}`,
+        rawText: 'sole private evidence',
+        contributorUserId: firstUser,
+      });
+      await dependencies.credentialVault.put('privacy-tenant', firstUser, 'gmail', {
+        accessToken: 'postgres-private-token',
+        scopes: ['gmail.readonly'],
+      });
+      await dependencies.queue.enqueue({
+        tenantId: 'privacy-tenant',
+        type: 'connector.sync',
+        idempotencyKey: `privacy-${suffix}`,
+        payload: { userId: firstUser, provider: 'gmail', organizationId: 'privacy-org' },
+      });
+      await dependencies.repository.setConnectorState(
+        'gmail',
+        firstUser,
+        'cursor',
+        {},
+        'privacy-tenant',
+        firstUser,
+      );
+
+      const exported = await dependencies.privacyRepository.exportAccount(
+        'privacy-tenant',
+        firstUser,
+      );
+      assert.equal(exported?.contributions.length, 2);
+      assert.equal(exported?.contributions.filter((item) => item.shared).length, 1);
+      assert.equal(exported?.connectors[0]?.provider, 'gmail');
+      assert.doesNotMatch(JSON.stringify(exported), /postgres-private-token/);
+
+      const erased = await dependencies.privacyRepository.eraseAccount(
+        'privacy-tenant',
+        firstUser,
+        suffix,
+      );
+      assert.equal(erased.membershipDeleted, true);
+      assert.equal(erased.identityDeleted, false);
+      assert.equal(erased.privateSourceVersionsDeleted, 1);
+      assert.equal(erased.contributionsRemoved, 2);
+      assert.deepEqual(erased.affectedOrganizationIds, ['privacy-org']);
+      assert.equal(erased.reconciliationJobIds.length, 1);
+      assert.ok((await dependencies.queue.stats('privacy-tenant')).queued >= 1);
+      assert.ok(await dependencies.repository.getSource(sharedVersion.versionId, 'privacy-tenant'));
+      assert.equal(
+        await dependencies.repository.getSource(soleVersion.versionId, 'privacy-tenant'),
+        undefined,
+      );
+      assert.equal(
+        await dependencies.credentialVault.get('privacy-tenant', firstUser, 'gmail'),
+        undefined,
+      );
+      assert.deepEqual(
+        await dependencies.repository.getConnectorState('gmail', firstUser, 'privacy-tenant'),
+        { metadata: {} },
+      );
+      assert.equal(
+        (
+          await admin.query(
+            `select count(*)::int as count from source_version_contributors
+           where tenant_id='privacy-tenant' and user_id=$1`,
+            [secondUser],
+          )
+        ).rows[0]?.count,
+        1,
+      );
+      assert.equal(
+        (
+          await admin.query(
+            `select count(*)::int as count from memberships
+             where tenant_id='other-privacy-tenant' and user_id=$1`,
+            [firstUser],
+          )
+        ).rows[0]?.count,
+        1,
+      );
+      assert.equal(
+        (await admin.query('select membership_count from users where id=$1', [firstUser])).rows[0]
+          ?.membership_count,
+        1,
+      );
+    } finally {
+      await dependencies.close();
+      await admin.end();
+    }
+  },
+);

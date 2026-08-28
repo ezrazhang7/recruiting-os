@@ -72,6 +72,7 @@ export class IngestionService {
         try {
           const { source: child, links } = await this.web.fetchSource(source.organizationId, url);
           child.tenantId = tenantId;
+          child.contributorUserId = source.contributorUserId;
           await this.ingest(child, { followLinks: false });
           if (maxDepth > 1 && classifyUrl(url) === 'bio_link') {
             for (const next of links
@@ -80,6 +81,7 @@ export class IngestionService {
               try {
                 const fetched = await this.web.fetchSource(source.organizationId, next);
                 fetched.source.tenantId = tenantId;
+                fetched.source.contributorUserId = source.contributorUserId;
                 await this.ingest(fetched.source, { followLinks: false });
               } catch {
                 // Child failures are independently retryable and must not poison the parent.

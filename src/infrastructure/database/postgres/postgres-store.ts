@@ -191,6 +191,22 @@ export class PostgresStore implements RecruitingRepository {
           JSON.stringify(source.metadata ?? {}),
         ],
       );
+      if (source.contributorUserId) {
+        const contributor = await client.query(
+          `insert into source_version_contributors(tenant_id,source_version_id,user_id)
+           select $1,$2,$3 from memberships where tenant_id=$1 and user_id=$3
+           on conflict do nothing`,
+          [tenantId, versionId, source.contributorUserId],
+        );
+        if (contributor.rowCount !== 1) {
+          const existing = await client.query(
+            `select 1 from source_version_contributors
+             where tenant_id=$1 and source_version_id=$2 and user_id=$3`,
+            [tenantId, versionId, source.contributorUserId],
+          );
+          if (!existing.rowCount) throw new Error('Source contributor is not a tenant member');
+        }
+      }
       const row = (
         await client.query<{ status: SourceVersionStatus; attempt_count: number }>(
           'select status,attempt_count from source_versions where tenant_id=$1 and id=$2',
@@ -427,6 +443,7 @@ export class PostgresStore implements RecruitingRepository {
     override: OpportunityOverride,
     tenantId = override.tenantId ?? this.defaultTenantId,
   ): Promise<void> {
+    if (!override.actorId) throw new Error('Opportunity override actor is required');
     await this.withTenant(tenantId, async (client) => {
       await client.query(
         `insert into opportunity_overrides(
@@ -462,7 +479,7 @@ export class PostgresStore implements RecruitingRepository {
         tenantId: row.tenant_id,
         opportunityId: row.opportunity_id,
         organizationId: row.organization_id,
-        actorId: row.actor_id,
+        actorId: row.actor_id ?? undefined,
         patch: row.patch,
         reason: row.reason,
         createdAt: row.created_at.toISOString(),
@@ -492,13 +509,15 @@ export class PostgresStore implements RecruitingRepository {
     cursor?: string,
     metadata: Record<string, unknown> = {},
     tenantId = this.defaultTenantId,
+    ownerUserId?: string,
   ): Promise<void> {
     await this.withTenant(tenantId, async (client) => {
       await client.query(
-        `insert into connector_state(tenant_id,connector,scope,cursor,metadata)
-         values($1,$2,$3,$4,$5) on conflict(tenant_id,connector,scope) do update set
-         cursor=excluded.cursor,metadata=excluded.metadata,updated_at=now()`,
-        [tenantId, connector, scope, cursor ?? null, JSON.stringify(metadata)],
+        `insert into connector_state(tenant_id,connector,scope,cursor,metadata,owner_user_id)
+         values($1,$2,$3,$4,$5,$6) on conflict(tenant_id,connector,scope) do update set
+         cursor=excluded.cursor,metadata=excluded.metadata,
+         owner_user_id=excluded.owner_user_id,updated_at=now()`,
+        [tenantId, connector, scope, cursor ?? null, JSON.stringify(metadata), ownerUserId ?? null],
       );
     });
   }
