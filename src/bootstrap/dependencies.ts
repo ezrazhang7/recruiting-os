@@ -15,6 +15,10 @@ import { PostgresCredentialRepository } from '../infrastructure/credentials/post
 import { SqliteCredentialRepository } from '../infrastructure/credentials/sqlite-credential-repository';
 import { PostgresAuditLog } from '../infrastructure/observability/postgres-audit-log';
 import { SqliteAuditLog } from '../infrastructure/observability/sqlite-audit-log';
+import { Pool, type PoolConfig } from 'pg';
+import type { RateLimiter } from '../application/ports/rate-limiter';
+import { PostgresRateLimiter } from '../infrastructure/rate-limit/postgres-rate-limiter';
+import { InMemoryRateLimiter } from '../infrastructure/rate-limit/in-memory-rate-limiter';
 
 export interface RuntimeDependencies {
   repository: RecruitingRepository;
@@ -22,40 +26,52 @@ export interface RuntimeDependencies {
   queue: JobQueue;
   credentialVault: CredentialVault;
   auditLog: AuditLog;
+  rateLimiter: RateLimiter;
   close(): Promise<void>;
 }
-export function createDependencies(config: AppConfig): RuntimeDependencies {
+
+export function postgresPoolOptions(config: AppConfig, component: 'api' | 'worker'): PoolConfig {
+  if (!config.database.url) throw new Error('DATABASE_URL is required for Postgres');
+  return {
+    connectionString: config.database.url,
+    max: config.database.poolSize,
+    statement_timeout: 5_000,
+    idle_in_transaction_session_timeout: 10_000,
+    connectionTimeoutMillis: 5_000,
+    application_name: `recruiting-os-${component}`,
+  };
+}
+
+export function createDependencies(
+  config: AppConfig,
+  component: 'api' | 'worker' = 'api',
+): RuntimeDependencies {
   if (config.database.driver === 'postgres') {
-    if (!config.database.url) throw new Error('DATABASE_URL is required for Postgres');
+    const databaseUrl = config.database.url;
+    if (!databaseUrl) throw new Error('DATABASE_URL is required for Postgres');
+    const pool = new Pool(postgresPoolOptions(config, component));
     const repository = new PostgresStore({
-      connectionString: config.database.url,
-      maxConnections: config.database.poolSize,
+      connectionString: databaseUrl,
+      pool,
       defaultTenantId: config.defaultTenantId,
     });
-    const authRepository = new PostgresAuthRepository(
-      config.database.url,
-      Math.max(2, Math.floor(config.database.poolSize / 2)),
-    );
-    const queue = new PostgresJobQueue(
-      config.database.url,
-      Math.max(2, Math.floor(config.database.poolSize / 2)),
-    );
-    const credentialRepository = new PostgresCredentialRepository(
-      config.database.url,
-      Math.max(2, Math.floor(config.database.poolSize / 3)),
-    );
+    const authRepository = new PostgresAuthRepository(pool);
+    const queue = new PostgresJobQueue(pool);
+    const credentialRepository = new PostgresCredentialRepository(pool);
     const credentialVault = new EncryptedCredentialVault(
       credentialRepository,
       config.auth.credentialMasterKey,
       config.auth.credentialKeyVersion,
     );
-    const auditLog = new PostgresAuditLog(config.database.url);
+    const auditLog = new PostgresAuditLog(pool);
+    const rateLimiter = new PostgresRateLimiter(pool);
     return {
       repository,
       authRepository,
       queue,
       credentialVault,
       auditLog,
+      rateLimiter,
       close: async () => {
         await Promise.all([
           repository.close(),
@@ -63,7 +79,9 @@ export function createDependencies(config: AppConfig): RuntimeDependencies {
           queue.close(),
           credentialRepository.close(),
           auditLog.close(),
+          rateLimiter.close(),
         ]);
+        await pool.end();
       },
     };
   }
@@ -84,6 +102,7 @@ export function createDependencies(config: AppConfig): RuntimeDependencies {
     queue,
     credentialVault,
     auditLog,
+    rateLimiter: new InMemoryRateLimiter(),
     close: async () => {
       await Promise.all([
         authRepository.close(),

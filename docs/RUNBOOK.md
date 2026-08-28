@@ -8,6 +8,13 @@
 4. Deploy one API canary, verify readiness, login, dashboard, ingestion enqueue, worker completion, and metrics.
 5. Roll the API and workers. Watch error rate, p95 latency, database connections, queue age, retry rate, dead letters, and OIDC failures for 30 minutes.
 
+`DATABASE_POOL_SIZE` is the total Postgres connection budget for one API or worker process; all
+adapters in that process share it. Set the managed database connection limit above
+`(maximum API replicas + worker replicas) * DATABASE_POOL_SIZE`, plus migration, maintenance,
+backup, monitoring, and operator headroom. The supplied manifest budgets 72 steady application
+connections: `(10 API + 2 workers) * 6`. Alert before 80% of the managed limit, and do not increase
+replicas or pool size independently without recalculating this ceiling.
+
 Workers renew their lease while processing long jobs. A crashed worker's expired job is reclaimed by
 another worker until its configured final attempt, when it is dead-lettered. During a rollout, allow
 the configured 120-second termination grace period before forcefully terminating a worker.

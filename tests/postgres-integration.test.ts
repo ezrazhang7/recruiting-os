@@ -6,6 +6,8 @@ import { PostgresStore } from '../src/infrastructure/database/postgres/postgres-
 import { PostgresRateLimiter } from '../src/infrastructure/rate-limit/postgres-rate-limiter';
 import { PostgresJobQueue } from '../src/infrastructure/queue/postgres-job-queue';
 import { runMaintenance } from '../src/infrastructure/database/postgres/maintenance';
+import { loadConfig } from '../src/config/env';
+import { createDependencies } from '../src/bootstrap/dependencies';
 
 const adminUrl = process.env.TEST_DATABASE_URL;
 
@@ -173,5 +175,61 @@ test('Postgres rate limiting is shared and atomic', { skip: !adminUrl }, async (
     assert.equal(results.filter((result) => !result.allowed).length, 3);
   } finally {
     await limiter.close();
+  }
+});
+
+test('Postgres adapters share one bounded pool per process', { skip: !adminUrl }, async () => {
+  if (!adminUrl) return;
+  await migrate(adminUrl);
+  const config = loadConfig({
+    NODE_ENV: 'test',
+    DATABASE_DRIVER: 'postgres',
+    DATABASE_URL: adminUrl,
+    DATABASE_POOL_SIZE: '3',
+  });
+  const dependencies = createDependencies(config, 'api');
+  const admin = new Pool({ connectionString: adminUrl, max: 1 });
+  const suffix = crypto.randomUUID();
+  try {
+    await dependencies.repository.upsertOrganization(
+      { id: `pool-org-${suffix}`, name: 'Pool Test', school: 'UNC' },
+      'unc',
+    );
+    const userId = await dependencies.authRepository.upsertIdentity(
+      { issuer: 'https://test.example', subject: `pool-user-${suffix}` },
+      'unc',
+    );
+    await Promise.all([
+      dependencies.queue.stats('unc'),
+      dependencies.auditLog.write({
+        tenantId: 'unc',
+        actorId: userId,
+        action: 'pool.test',
+        resourceType: 'test',
+      }),
+      dependencies.credentialVault.put('unc', userId, 'gmail', {
+        accessToken: 'test-only-token',
+        scopes: ['readonly'],
+      }),
+      ...Array.from({ length: 12 }, (_, index) =>
+        dependencies.rateLimiter.consume(`pool:${suffix}:${index}`, 1, 60_000),
+      ),
+    ]);
+
+    const pools = await admin.query<{ application_name: string; connections: string }>(
+      `select application_name,count(*)::text as connections
+       from pg_stat_activity
+       where datname=current_database() and application_name like 'recruiting-os-%'
+       group by application_name`,
+    );
+    assert.deepEqual(
+      pools.rows.map((row) => row.application_name),
+      ['recruiting-os-api'],
+    );
+    assert.ok(Number(pools.rows[0]?.connections) >= 1);
+    assert.ok(Number(pools.rows[0]?.connections) <= 3);
+  } finally {
+    await dependencies.close();
+    await admin.end();
   }
 });

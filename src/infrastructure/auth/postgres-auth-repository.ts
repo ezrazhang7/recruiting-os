@@ -9,13 +9,18 @@ import { stableId } from '../../lib/util';
 
 export class PostgresAuthRepository implements AuthRepository {
   private readonly pool: Pool;
-  constructor(connectionString: string, maxConnections = 5) {
-    this.pool = new Pool({
-      connectionString,
-      max: maxConnections,
-      statement_timeout: 5_000,
-      application_name: 'recruiting-os-auth',
-    });
+  private readonly ownsPool: boolean;
+  constructor(connection: string | Pool, maxConnections = 5) {
+    this.ownsPool = typeof connection === 'string';
+    this.pool =
+      typeof connection === 'string'
+        ? new Pool({
+            connectionString: connection,
+            max: maxConnections,
+            statement_timeout: 5_000,
+            application_name: 'recruiting-os-auth',
+          })
+        : connection;
   }
   async upsertIdentity(
     identity: OidcIdentity,
@@ -140,6 +145,6 @@ export class PostgresAuthRepository implements AuthRepository {
     }
   }
   async close(): Promise<void> {
-    await this.pool.end();
+    if (this.ownsPool) await this.pool.end();
   }
 }

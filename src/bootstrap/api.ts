@@ -1,8 +1,6 @@
 import { SessionService } from '../application/auth/session-service';
 import { loadConfig } from '../config/env';
 import { OidcService } from '../infrastructure/auth/oidc-service';
-import { InMemoryRateLimiter } from '../infrastructure/rate-limit/in-memory-rate-limiter';
-import { PostgresRateLimiter } from '../infrastructure/rate-limit/postgres-rate-limiter';
 import { buildApp } from '../http/app';
 import { ProviderOAuthService } from '../infrastructure/auth/provider-oauth-service';
 import { createDependencies } from './dependencies';
@@ -27,19 +25,12 @@ async function main() {
           allowedEmailDomain: config.auth.allowedEmailDomain,
         })
       : undefined;
-  const rateLimiter =
-    config.database.driver === 'postgres' && config.database.url
-      ? new PostgresRateLimiter(
-          config.database.url,
-          Math.max(2, Math.floor(config.database.poolSize / 4)),
-        )
-      : new InMemoryRateLimiter();
   const app = await buildApp({
     config,
     repository: dependencies.repository,
     queue: dependencies.queue,
     sessionService,
-    rateLimiter,
+    rateLimiter: dependencies.rateLimiter,
     oidc,
     credentialVault: dependencies.credentialVault,
     providerOAuth: new ProviderOAuthService(config.providers),
@@ -48,7 +39,6 @@ async function main() {
   const shutdown = async (signal: string) => {
     app.log.info({ signal }, 'shutting down');
     await app.close();
-    if (rateLimiter instanceof PostgresRateLimiter) await rateLimiter.close();
     await dependencies.close();
   };
   process.once('SIGTERM', () => void shutdown('SIGTERM'));

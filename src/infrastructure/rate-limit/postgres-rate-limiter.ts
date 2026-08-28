@@ -4,14 +4,19 @@ import type { RateLimiter, RateLimitResult } from '../../application/ports/rate-
 
 export class PostgresRateLimiter implements RateLimiter {
   private readonly pool: Pool;
+  private readonly ownsPool: boolean;
 
-  constructor(connectionString: string, maxConnections = 3) {
-    this.pool = new Pool({
-      connectionString,
-      max: maxConnections,
-      statement_timeout: 2_000,
-      application_name: 'recruiting-os-rate-limit',
-    });
+  constructor(connection: string | Pool, maxConnections = 3) {
+    this.ownsPool = typeof connection === 'string';
+    this.pool =
+      typeof connection === 'string'
+        ? new Pool({
+            connectionString: connection,
+            max: maxConnections,
+            statement_timeout: 2_000,
+            application_name: 'recruiting-os-rate-limit',
+          })
+        : connection;
   }
 
   async consume(key: string, limit: number, windowMs: number): Promise<RateLimitResult> {
@@ -32,6 +37,6 @@ export class PostgresRateLimiter implements RateLimiter {
   }
 
   async close(): Promise<void> {
-    await this.pool.end();
+    if (this.ownsPool) await this.pool.end();
   }
 }

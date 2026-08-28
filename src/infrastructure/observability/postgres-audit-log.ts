@@ -3,13 +3,18 @@ import type { AuditEvent, AuditLog } from '../../application/ports/audit-log';
 import { uid } from '../../lib/util';
 export class PostgresAuditLog implements AuditLog {
   private readonly pool: Pool;
-  constructor(connectionString: string, max = 2) {
-    this.pool = new Pool({
-      connectionString,
-      max,
-      statement_timeout: 5_000,
-      application_name: 'recruiting-os-audit',
-    });
+  private readonly ownsPool: boolean;
+  constructor(connection: string | Pool, max = 2) {
+    this.ownsPool = typeof connection === 'string';
+    this.pool =
+      typeof connection === 'string'
+        ? new Pool({
+            connectionString: connection,
+            max,
+            statement_timeout: 5_000,
+            application_name: 'recruiting-os-audit',
+          })
+        : connection;
   }
   async write(event: AuditEvent): Promise<void> {
     const client = await this.pool.connect();
@@ -38,6 +43,6 @@ export class PostgresAuditLog implements AuditLog {
     }
   }
   async close(): Promise<void> {
-    await this.pool.end();
+    if (this.ownsPool) await this.pool.end();
   }
 }

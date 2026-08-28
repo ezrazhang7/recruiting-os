@@ -7,6 +7,7 @@ data:
   HOST: 0.0.0.0
   PORT: '4318'
   DATABASE_DRIVER: postgres
+  DATABASE_POOL_SIZE: '6'
   AUTH_MODE: oidc
   OIDC_ALLOWED_EMAIL_DOMAIN: unc.edu
   DEFAULT_TENANT_ID: unc

@@ -6,13 +6,18 @@ import type {
 
 export class PostgresCredentialRepository implements CredentialRepository {
   private readonly pool: Pool;
-  constructor(connectionString: string, max = 3) {
-    this.pool = new Pool({
-      connectionString,
-      max,
-      statement_timeout: 5_000,
-      application_name: 'recruiting-os-credentials',
-    });
+  private readonly ownsPool: boolean;
+  constructor(connection: string | Pool, max = 3) {
+    this.ownsPool = typeof connection === 'string';
+    this.pool =
+      typeof connection === 'string'
+        ? new Pool({
+            connectionString: connection,
+            max,
+            statement_timeout: 5_000,
+            application_name: 'recruiting-os-credentials',
+          })
+        : connection;
   }
   async save(value: StoredCredential): Promise<void> {
     await this.withTenant(value.tenantId, async (client) => {
@@ -68,7 +73,7 @@ export class PostgresCredentialRepository implements CredentialRepository {
     });
   }
   async close(): Promise<void> {
-    await this.pool.end();
+    if (this.ownsPool) await this.pool.end();
   }
   private async withTenant<T>(
     tenantId: string,

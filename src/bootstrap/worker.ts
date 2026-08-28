@@ -32,7 +32,7 @@ const connectorSyncPayloadSchema = z.object({
 
 async function main() {
   const config = loadConfig();
-  const dependencies = createDependencies(config);
+  const dependencies = createDependencies(config, 'worker');
   const logger = createLogger(config.logLevel);
   const workerId = `worker-${randomUUID()}`;
   const web = new WebConnector(

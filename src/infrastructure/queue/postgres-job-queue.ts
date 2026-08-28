@@ -5,13 +5,18 @@ import { stableId } from '../../lib/util';
 
 export class PostgresJobQueue implements JobQueue {
   private readonly pool: Pool;
-  constructor(connectionString: string, maxConnections = 5) {
-    this.pool = new Pool({
-      connectionString,
-      max: maxConnections,
-      statement_timeout: 5_000,
-      application_name: 'recruiting-os-queue',
-    });
+  private readonly ownsPool: boolean;
+  constructor(connection: string | Pool, maxConnections = 5) {
+    this.ownsPool = typeof connection === 'string';
+    this.pool =
+      typeof connection === 'string'
+        ? new Pool({
+            connectionString: connection,
+            max: maxConnections,
+            statement_timeout: 5_000,
+            application_name: 'recruiting-os-queue',
+          })
+        : connection;
   }
   async enqueue(input: EnqueueJob): Promise<Job> {
     const client = await this.pool.connect();
@@ -137,7 +142,7 @@ export class PostgresJobQueue implements JobQueue {
     }
   }
   async close(): Promise<void> {
-    await this.pool.end();
+    if (this.ownsPool) await this.pool.end();
   }
   private map(row: QueryResultRow): Job {
     return {

@@ -35,6 +35,7 @@ function identity(source: SourceItem): string {
 
 export interface PostgresStoreOptions {
   connectionString: string;
+  pool?: Pool;
   maxConnections?: number;
   statementTimeoutMs?: number;
   defaultTenantId?: string;
@@ -42,6 +43,7 @@ export interface PostgresStoreOptions {
 
 export class PostgresStore implements RecruitingRepository {
   private readonly pool: Pool;
+  private readonly ownsPool: boolean;
   private readonly transactions = new AsyncLocalStorage<PoolClient>();
   private readonly statementTimeoutMs: number;
   private readonly defaultTenantId: string;
@@ -49,17 +51,20 @@ export class PostgresStore implements RecruitingRepository {
   constructor(options: PostgresStoreOptions) {
     this.statementTimeoutMs = options.statementTimeoutMs ?? 5_000;
     this.defaultTenantId = options.defaultTenantId ?? DEFAULT_TENANT_ID;
-    this.pool = new Pool({
-      connectionString: options.connectionString,
-      max: options.maxConnections ?? 10,
-      statement_timeout: this.statementTimeoutMs,
-      idle_in_transaction_session_timeout: 10_000,
-      application_name: 'recruiting-os',
-    });
+    this.ownsPool = !options.pool;
+    this.pool =
+      options.pool ??
+      new Pool({
+        connectionString: options.connectionString,
+        max: options.maxConnections ?? 10,
+        statement_timeout: this.statementTimeoutMs,
+        idle_in_transaction_session_timeout: 10_000,
+        application_name: 'recruiting-os',
+      });
   }
 
   async close(): Promise<void> {
-    await this.pool.end();
+    if (this.ownsPool) await this.pool.end();
   }
 
   async transaction<T>(operation: () => Promise<T>): Promise<T> {

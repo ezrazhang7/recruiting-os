@@ -45,6 +45,8 @@ This starts Postgres, applies migrations, and runs separate API and worker conta
 Production startup fails closed unless all of the following are set:
 
 - `NODE_ENV=production`, `DATABASE_DRIVER=postgres`, and a TLS-capable `DATABASE_URL`.
+- `DATABASE_POOL_SIZE` as the total connection budget per process; size it with the maximum API and
+  worker replica count using the formula in the runbook.
 - `AUTH_MODE=oidc`, `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_REDIRECT_URI`, a non-development `SESSION_SECRET`, and the permitted email domain.
 - A 32-byte base64 `CREDENTIAL_MASTER_KEY` and a distinct 32+ character `METRICS_BEARER_TOKEN`, both sourced from a secret manager.
 - Exact `ALLOWED_ORIGINS`, trusted-proxy configuration, provider OAuth credentials/redirects, and an optional OpenAI extraction key.

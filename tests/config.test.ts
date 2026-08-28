@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { postgresPoolOptions } from '../src/bootstrap/dependencies';
 import { loadConfig } from '../src/config/env';
 
 test('production refuses SQLite and development authentication', () => {
@@ -22,6 +23,23 @@ test('production accepts explicit Postgres and OIDC configuration', () => {
   });
   assert.equal(config.database.driver, 'postgres');
   assert.equal(config.auth.mode, 'oidc');
+});
+
+test('database pool size is one explicit per-process budget', () => {
+  const config = loadConfig({
+    NODE_ENV: 'test',
+    DATABASE_DRIVER: 'postgres',
+    DATABASE_URL: 'postgres://db/recruiting',
+    DATABASE_POOL_SIZE: '6',
+  });
+  assert.deepEqual(
+    {
+      max: postgresPoolOptions(config, 'api').max,
+      apiName: postgresPoolOptions(config, 'api').application_name,
+      workerName: postgresPoolOptions(config, 'worker').application_name,
+    },
+    { max: 6, apiName: 'recruiting-os-api', workerName: 'recruiting-os-worker' },
+  );
 });
 
 test('production rejects missing or insecure browser origins', () => {
