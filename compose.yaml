@@ -1,0 +1,54 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: recruiting_os
+      POSTGRES_USER: recruiting_os
+      POSTGRES_PASSWORD: local-only-password
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U recruiting_os -d recruiting_os']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - '127.0.0.1:5432:5432'
+  migrate:
+    build: .
+    command: ['node', 'dist/src/infrastructure/database/postgres/migrate.js']
+    environment: &runtime
+      NODE_ENV: development
+      DATABASE_DRIVER: postgres
+      DATABASE_URL: postgresql://recruiting_os:local-only-password@postgres:5432/recruiting_os
+    depends_on:
+      postgres:
+        condition: service_healthy
+  api:
+    build: .
+    environment:
+      <<: *runtime
+      HOST: 0.0.0.0
+      AUTH_MODE: development
+      SESSION_SECRET: development-only-session-secret-change-me
+      CREDENTIAL_MASTER_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      ALLOWED_ORIGINS: http://localhost:4318
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - '127.0.0.1:4318:4318'
+  worker:
+    build: .
+    command: ['node', 'dist/src/bootstrap/worker.js']
+    environment:
+      <<: *runtime
+      AUTH_MODE: development
+      SESSION_SECRET: development-only-session-secret-change-me
+      CREDENTIAL_MASTER_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-data:

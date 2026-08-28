@@ -2,10 +2,14 @@ import { readFile, readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { Pool } from 'pg';
 
-export async function migrate(databaseUrl: string, directory = resolve('migrations')): Promise<void> {
+export async function migrate(
+  databaseUrl: string,
+  directory = resolve('migrations'),
+): Promise<void> {
   const pool = new Pool({ connectionString: databaseUrl, max: 1 });
   const client = await pool.connect();
   try {
+    await client.query(`select pg_advisory_lock(hashtext('recruiting-os-schema-migrations'))`);
     await client.query(`create table if not exists schema_migrations (
       version text primary key,
       applied_at timestamptz not null default now()
@@ -20,10 +24,18 @@ export async function migrate(databaseUrl: string, directory = resolve('migratio
       .sort();
     for (const file of files) {
       if (applied.has(file)) continue;
-      await client.query(await readFile(resolve(directory, file), 'utf8'));
-      await client.query('insert into schema_migrations(version) values($1)', [file]);
+      await client.query('begin');
+      try {
+        await client.query(await readFile(resolve(directory, file), 'utf8'));
+        await client.query('insert into schema_migrations(version) values($1)', [file]);
+        await client.query('commit');
+      } catch (error) {
+        await client.query('rollback');
+        throw error;
+      }
     }
   } finally {
+    await client.query(`select pg_advisory_unlock(hashtext('recruiting-os-schema-migrations'))`);
     client.release();
     await pool.end();
   }

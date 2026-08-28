@@ -1,9 +1,6 @@
 import { z } from 'zod';
 
-const booleanFromString = z.preprocess(
-  (value) => value === true || value === 'true',
-  z.boolean(),
-);
+const booleanFromString = z.preprocess((value) => value === true || value === 'true', z.boolean());
 
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -32,12 +29,23 @@ const schema = z.object({
   MAX_FETCH_BYTES: z.coerce.number().int().min(1_024).max(20_000_000).default(2_000_000),
   RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10_000).default(120),
   TRUST_PROXY: booleanFromString.default(false),
-  LOG_LEVEL: z.enum(['fatal','error','warn','info','debug','trace','silent']).default('info'),
-  GOOGLE_CLIENT_ID: z.string().optional(), GOOGLE_CLIENT_SECRET: z.string().optional(), GOOGLE_REDIRECT_URI: z.string().url().optional(),
-  GROUPME_CLIENT_ID: z.string().optional(), GROUPME_CLIENT_SECRET: z.string().optional(), GROUPME_REDIRECT_URI: z.string().url().optional(),
-  META_CLIENT_ID: z.string().optional(), META_CLIENT_SECRET: z.string().optional(), META_REDIRECT_URI: z.string().url().optional(),
-  LINKEDIN_CLIENT_ID: z.string().optional(), LINKEDIN_CLIENT_SECRET: z.string().optional(), LINKEDIN_REDIRECT_URI: z.string().url().optional(),
-  GMAIL_USER_ID: z.string().default('me'), META_API_VERSION: z.string().default('v24.0'), META_IG_USER_ID: z.string().optional(), LINKEDIN_VERSION: z.string().default('202608'),
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
+  GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
+  GOOGLE_REDIRECT_URI: z.string().url().optional(),
+  GROUPME_CLIENT_ID: z.string().optional(),
+  GROUPME_CLIENT_SECRET: z.string().optional(),
+  GROUPME_REDIRECT_URI: z.string().url().optional(),
+  META_CLIENT_ID: z.string().optional(),
+  META_CLIENT_SECRET: z.string().optional(),
+  META_REDIRECT_URI: z.string().url().optional(),
+  LINKEDIN_CLIENT_ID: z.string().optional(),
+  LINKEDIN_CLIENT_SECRET: z.string().optional(),
+  LINKEDIN_REDIRECT_URI: z.string().url().optional(),
+  GMAIL_USER_ID: z.string().default('me'),
+  META_API_VERSION: z.string().default('v24.0'),
+  META_IG_USER_ID: z.string().optional(),
+  LINKEDIN_VERSION: z.string().default('202608'),
 });
 
 export type AppConfig = ReturnType<typeof loadConfig>;
@@ -82,7 +90,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
       allowedEmailDomain: value.OIDC_ALLOWED_EMAIL_DOMAIN,
     },
     defaultTenantId: value.DEFAULT_TENANT_ID,
-    allowedOrigins: value.ALLOWED_ORIGINS.split(',').map((origin) => origin.trim()).filter(Boolean),
+    allowedOrigins: value.ALLOWED_ORIGINS.split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean),
     openai: { apiKey: value.OPENAI_API_KEY ?? '', model: value.OPENAI_MODEL },
     limits: {
       requestBytes: value.MAX_REQUEST_BYTES,
@@ -93,11 +103,32 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     trustProxy: value.TRUST_PROXY,
     logLevel: value.LOG_LEVEL,
     providers: {
-      gmail: { clientId:value.GOOGLE_CLIENT_ID,clientSecret:value.GOOGLE_CLIENT_SECRET,redirectUri:value.GOOGLE_REDIRECT_URI },
-      groupme: { clientId:value.GROUPME_CLIENT_ID,clientSecret:value.GROUPME_CLIENT_SECRET,redirectUri:value.GROUPME_REDIRECT_URI },
-      instagram: { clientId:value.META_CLIENT_ID,clientSecret:value.META_CLIENT_SECRET,redirectUri:value.META_REDIRECT_URI },
-      linkedin: { clientId:value.LINKEDIN_CLIENT_ID,clientSecret:value.LINKEDIN_CLIENT_SECRET,redirectUri:value.LINKEDIN_REDIRECT_URI },
+      gmail: {
+        clientId: value.GOOGLE_CLIENT_ID,
+        clientSecret: value.GOOGLE_CLIENT_SECRET,
+        redirectUri: value.GOOGLE_REDIRECT_URI,
+      },
+      groupme: {
+        clientId: value.GROUPME_CLIENT_ID,
+        clientSecret: value.GROUPME_CLIENT_SECRET,
+        redirectUri: value.GROUPME_REDIRECT_URI,
+      },
+      instagram: {
+        clientId: value.META_CLIENT_ID,
+        clientSecret: value.META_CLIENT_SECRET,
+        redirectUri: value.META_REDIRECT_URI,
+      },
+      linkedin: {
+        clientId: value.LINKEDIN_CLIENT_ID,
+        clientSecret: value.LINKEDIN_CLIENT_SECRET,
+        redirectUri: value.LINKEDIN_REDIRECT_URI,
+      },
     },
-    connectorRuntime: { gmailUserId:value.GMAIL_USER_ID,metaApiVersion:value.META_API_VERSION,metaIgUserId:value.META_IG_USER_ID,linkedinVersion:value.LINKEDIN_VERSION },
+    connectorRuntime: {
+      gmailUserId: value.GMAIL_USER_ID,
+      metaApiVersion: value.META_API_VERSION,
+      metaIgUserId: value.META_IG_USER_ID,
+      linkedinVersion: value.LINKEDIN_VERSION,
+    },
   } as const;
 }

@@ -15,10 +15,16 @@ export function extractUrls(text: string): string[] {
 }
 
 export function parseJsonSafe<T>(value: string, fallback: T): T {
-  try { return JSON.parse(value) as T; } catch { return fallback; }
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
 }
 
-export function clamp01(v: number): number { return Math.max(0, Math.min(1, v)); }
+export function clamp01(v: number): number {
+  return Math.max(0, Math.min(1, v));
+}
 
 export function normalizeHandle(v: string): string {
   return v.trim().replace(/^@/, '').toLowerCase();

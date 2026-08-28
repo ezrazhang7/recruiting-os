@@ -2,6 +2,7 @@ import type {
   Claim,
   Organization,
   Opportunity,
+  OpportunityOverride,
   ProcessingFailure,
   SourceItem,
   StageSourceResult,
@@ -19,8 +20,17 @@ export interface RecruitingRepository {
   getSource(id: string, tenantId?: string): Promise<SourceItem | undefined>;
   putClaims(claims: Claim[], tenantId?: string): Promise<void>;
   listClaims(organizationId: string, tenantId?: string): Promise<Claim[]>;
-  replaceOpportunities(organizationId: string, opportunities: Opportunity[], tenantId?: string): Promise<void>;
+  replaceOpportunities(
+    organizationId: string,
+    opportunities: Opportunity[],
+    tenantId?: string,
+  ): Promise<void>;
   listOpportunities(organizationId?: string, tenantId?: string): Promise<Opportunity[]>;
+  putOpportunityOverride(override: OpportunityOverride, tenantId?: string): Promise<void>;
+  listOpportunityOverrides(
+    organizationId: string,
+    tenantId?: string,
+  ): Promise<OpportunityOverride[]>;
   getConnectorState(
     connector: string,
     scope: string,

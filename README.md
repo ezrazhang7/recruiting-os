@@ -1,133 +1,83 @@
 # Recruiting OS
 
-Evidence-first recruiting intelligence for clubs whose deadlines and recruiting events are fragmented across Gmail, GroupMe, Instagram, LinkedIn, websites, link-in-bio hubs, application forms, Heel Life, and screenshots.
+Recruiting OS turns fragmented UNC student-organization recruiting information into current, evidence-backed applications and events. It ingests versioned evidence from approved connectors and public URLs, extracts claims, reconciles conflicts, and presents a protected student dashboard with an attributable review workflow.
 
-## What is in this codebase
+## Release posture
 
-This repository contains the real TypeScript implementation **and a compiled `dist/` build**.
+This repository contains production-oriented application code, but a deployment is not approved merely because the code builds. A release requires the external gates in [the operations runbook](docs/RUNBOOK.md): UNC OIDC/provider credentials, managed Postgres, backups and a restore drill, monitoring/alerts, provider integration tests, and the production-equivalent [load test](docs/LOAD_TEST.md). Never deploy the development SQLite/auth mode publicly.
 
-- Immutable `source_items` and extracted `claims`.
-- Resolver that derives canonical applications/events using source authority, recency, open/closed state, and stale-deadline handling.
-- GroupMe OAuth URL, group listing, incremental message sync with `after_id`, and image attachments.
-- Gmail watch/push helpers, history cursor sync, MIME parsing, and recruiting-flyer attachment ingestion.
-- Instagram Professional-account Business Discovery ingestion, including carousel images and bio website discovery.
-- LinkedIn organization vanity-name lookup + authorized organization-post ingestion + image hydration. This intentionally does **not** scrape logged-in LinkedIn pages.
-- Web/link-in-bio crawler with bounded recursion and SSRF protections; application links are followed so forms/pages can contribute their own state.
-- Screenshot ingestion for Stories, personal Instagram accounts, flyers, and unsupported sources.
-- Optional multimodal OpenAI Responses extraction with a deterministic fallback extractor for local/offline tests.
-- SQLite runtime store plus a production-oriented Postgres/Supabase schema.
-- Minimal HTTP API/dashboard.
-- 180 Degrees Consulting @ UNC regression scenario for stale website + closed form + newer social-source behavior.
+## Architecture
 
-## Quick start
+- Fastify API with deny-by-default authentication, server-side hashed sessions, CSRF protection, RBAC, organization scoping, strict request validation, CSP/CORS, bounded bodies, and sanitized errors.
+- Immutable logical sources and content-addressed source versions. Failed extraction remains retryable; changed content at the same URL creates a new version; unchanged content is a no-op.
+- Evidence resolver with authority/recency rules, IANA `America/New_York` time handling, date precision, policy versioning, and audited human overrides.
+- Postgres production repositories with tenant RLS, migrations, encrypted connector credentials, durable fair queues, leases, retries, dead letters, cursor state, and shared rate limiting.
+- Workers for bounded URL/screenshot ingestion and Gmail, GroupMe, Instagram, and LinkedIn sync. Provider calls use host allowlists, timeouts, retry/backoff, and circuit breaking; public URL fetches revalidate DNS and every redirect against SSRF policy.
+- Accessible student UI and evidence/admin controls served as same-origin assets. Student DTOs omit internal tenant and evidence data.
+- Structured redacted logs, request IDs, protected Prometheus-format API/queue metrics, health/readiness probes, immutable container deployment templates, and backup/recovery runbooks.
 
-Node 22.5+ is required because the local store uses Node's built-in SQLite module.
+The module direction is `domain → application ports → infrastructure adapters → bootstraps`. Domain and resolver code do not depend on Fastify, SQLite, Postgres, or provider SDKs.
 
-The ZIP already contains compiled JS, so the fastest path is:
+## Local development
+
+Use Node 22 LTS (see `.nvmrc`).
 
 ```bash
+npm ci
 cp .env.example .env
-npm start
-# http://localhost:4318
-# JSON: http://localhost:4318/api/dashboard
-```
-
-To edit/rebuild TypeScript:
-
-```bash
-npm install
-npm test
+npm run check
 npm run dev
 ```
 
-Run the 180DC regression demo:
+Open `http://127.0.0.1:4318`. Local mode uses an explicit development login and SQLite. The browser interface is the normal entry point; API routes remain protected.
+
+For a local Postgres stack:
 
 ```bash
-npm run demo:180dc
+docker compose up --build
 ```
 
-## Environment variables
+This starts Postgres, applies migrations, and runs separate API and worker containers. The compose credentials are local-only.
 
-```dotenv
-PORT=4318
-DATABASE_PATH=./data/recruiting-os.sqlite
-OPENAI_API_KEY=
-OPENAI_MODEL=gpt-5-mini
-GROUPME_CLIENT_ID=
-GROUPME_ACCESS_TOKEN=
-GMAIL_ACCESS_TOKEN=
-GMAIL_USER_ID=me
-META_ACCESS_TOKEN=
-META_API_VERSION=v24.0
-META_IG_USER_ID=
-LINKEDIN_ACCESS_TOKEN=
-LINKEDIN_VERSION=202608
+## Production configuration
+
+Production startup fails closed unless all of the following are set:
+
+- `NODE_ENV=production`, `DATABASE_DRIVER=postgres`, and a TLS-capable `DATABASE_URL`.
+- `AUTH_MODE=oidc`, `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_REDIRECT_URI`, a non-development `SESSION_SECRET`, and the permitted email domain.
+- A 32-byte base64 `CREDENTIAL_MASTER_KEY` sourced from a secret manager, with a tracked key version.
+- Exact `ALLOWED_ORIGINS`, trusted-proxy configuration, provider OAuth credentials/redirects, and an optional OpenAI extraction key.
+
+See [.env.example](.env.example) for the complete contract. Do not commit `.env` or credentials.
+
+Run migrations as a one-off release job before rolling API/worker instances:
+
+```bash
+npm run build
+DATABASE_URL=postgresql://... npm run migrate
 ```
 
-The connector classes accept injected `fetch` implementations, so OAuth/token management can live in a separate auth layer without coupling credentials to the domain code.
+## Verification
 
-## Data model
-
-The important design choice is that a deadline is **not** the primitive. Evidence is.
-
-```text
-organization
-   ├── source_item: Gmail message
-   ├── source_item: GroupMe message
-   ├── source_item: Instagram post/image
-   ├── source_item: LinkedIn org post
-   ├── source_item: website/link hub
-   └── source_item: application form
-             ↓
-           claims
-             ↓
-          resolver
-             ↓
- canonical application/event state
+```bash
+npm run typecheck
+npm run lint
+npm run format:check
+npm test
+npm audit --audit-level=high
+TEST_DATABASE_URL=postgresql://... npm run test:postgres
 ```
 
-An old website can therefore remain preserved as evidence without being mistaken for the current recruiting cycle.
+CI repeats these checks on Node 22 and a real Postgres 16 service, proves RLS cross-tenant isolation, checks shared rate-limit atomicity, and scans the Git history for secrets. Provider contract tests use injected transports; live-provider and production load gates must run in a controlled staging account before release.
 
-## API
+## API surface
 
-Current minimal routes:
+Public routes are limited to the UI assets, liveness/readiness, and OIDC/development-auth entry points. Authenticated routes cover the student dashboard, organizations, connector OAuth/status/revoke/sync, bounded ingestion queueing, admin evidence, reviewed opportunity overrides, and protected metrics. Mutations require CSRF and idempotent queue jobs.
 
-- `GET /api/dashboard`
-- `GET /api/organizations/:id`
-- `POST /api/organizations`
-- `POST /api/ingest/url`
-- `POST /api/ingest/screenshot`
+## Data handling and incident response
 
-Example organization:
+Read [data governance](docs/DATA_GOVERNANCE.md), the [operations runbook](docs/RUNBOOK.md), and [security policy](SECURITY.md) before connecting real student accounts. Raw messages, screenshots, session data, and OAuth tokens are sensitive. Logs redact those values; connector credentials are authenticated-encrypted at rest; evidence access and material mutations are audited.
 
-```json
-{
-  "id": "180dc-unc",
-  "name": "180 Degrees Consulting at UNC",
-  "school": "University of North Carolina at Chapel Hill",
-  "heelLifeUrl": "https://heellife.unc.edu/...",
-  "websiteUrl": "https://unc180dc.wixsite.com/home/join-us",
-  "instagramHandle": "unc180dc",
-  "linkedinUrl": "https://www.linkedin.com/company/180-degrees-consulting-unc/"
-}
-```
+## Intentional provider constraints
 
-Example screenshot ingestion:
-
-```json
-{
-  "organizationId": "180dc-unc",
-  "base64": "...",
-  "mimeType": "image/png",
-  "note": "Instagram Story screenshot",
-  "publishedAt": "2026-08-27T12:00:00-04:00"
-}
-```
-
-## Tests
-
-The repository currently has **26 passing tests** covering URL classification, deadline/event disambiguation, stale/open/closed resolution, GroupMe cursors/images, Gmail push/MIME/attachments, Instagram carousels, LinkedIn org lookup/images, web crawling, and the 180DC stale-source scenario.
-
-## Production notes
-
-This is an MVP core, not a finished hosted SaaS. Before multi-user production deployment, add encrypted credential storage, real OAuth callback/session handling, background queues, webhook/PubSub workers, per-user tenancy/RLS, observability, rate-limit backoff, and a proper front-end. The connector/domain boundaries here are intended to survive that migration.
+LinkedIn support uses authorized organization APIs and never scrapes logged-in pages. Instagram support targets Professional-account discovery; screenshots cover Stories/personal accounts. Gmail access is read-only and bounded. Connector access depends on provider approval and must comply with provider and university policy.

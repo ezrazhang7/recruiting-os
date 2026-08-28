@@ -1,4 +1,4 @@
-const DAYS = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 
 export function resolveRelativeWeekday(word: string, publishedAt?: string): string | undefined {
   if (!publishedAt) return undefined;
@@ -9,12 +9,19 @@ export function resolveRelativeWeekday(word: string, publishedAt?: string): stri
   let delta = (idx - d.getUTCDay() + 7) % 7;
   if (delta === 0) delta = 7;
   d.setUTCDate(d.getUTCDate() + delta);
-  return d.toISOString().slice(0,10);
+  return d.toISOString().slice(0, 10);
 }
 
 function offsetForDate(date: string, timeZone: string): string {
   const [year, month, day] = date.split('-').map(Number);
   if (!year || !month || !day) throw new Error(`Invalid calendar date: ${date}`);
+  const calendar = new Date(Date.UTC(year, month - 1, day));
+  if (
+    calendar.getUTCFullYear() !== year ||
+    calendar.getUTCMonth() !== month - 1 ||
+    calendar.getUTCDate() !== day
+  )
+    throw new Error(`Invalid calendar date: ${date}`);
   const sample = new Date(Date.UTC(year, month - 1, day, 12));
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone,
@@ -48,11 +55,51 @@ export function combineDateTime(
   timeZone = 'America/New_York',
 ): string {
   const offset = offsetForDate(date, timeZone);
-  if (!time) return `${date}T23:59:00${offset}`;
+  if (!time) return validateLocalDateTime(`${date}T23:59:00${offset}`, date, 23, 59, timeZone);
   const m = time.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
-  if (!m) return `${date}T23:59:00${offset}`;
-  let h = Number(m[1]); const min = Number(m[2] ?? 0); const ap = m[3]?.toLowerCase();
+  if (!m) throw new Error(`Invalid local time: ${time}`);
+  let h = Number(m[1]);
+  const min = Number(m[2] ?? 0);
+  const ap = m[3]?.toLowerCase();
+  if (min > 59 || (ap && (h < 1 || h > 12)) || (!ap && h > 23))
+    throw new Error(`Invalid local time: ${time}`);
   if (ap === 'pm' && h < 12) h += 12;
   if (ap === 'am' && h === 12) h = 0;
-  return `${date}T${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}:00${offset}`;
+  return validateLocalDateTime(
+    `${date}T${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}:00${offset}`,
+    date,
+    h,
+    min,
+    timeZone,
+  );
+}
+
+function validateLocalDateTime(
+  value: string,
+  expectedDate: string,
+  expectedHour: number,
+  expectedMinute: number,
+  timeZone: string,
+): string {
+  const instant = new Date(value);
+  if (Number.isNaN(instant.getTime())) throw new Error(`Invalid date-time: ${value}`);
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(instant);
+  const get = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value;
+  const renderedDate = `${get('year')}-${get('month')}-${get('day')}`;
+  if (
+    renderedDate !== expectedDate ||
+    Number(get('hour')) !== expectedHour ||
+    Number(get('minute')) !== expectedMinute
+  )
+    throw new Error(`Local time does not exist in ${timeZone}: ${expectedDate}`);
+  return value;
 }

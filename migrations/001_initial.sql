@@ -1,5 +1,3 @@
-begin;
-
 create extension if not exists pgcrypto;
 
 create table tenants (
@@ -259,28 +257,26 @@ begin
   select leased.* from leased cross join touched;
 end $$;
 
-create function app.finish_job(job_id text, expected_lease timestamptz, failure text default null)
+create function app.finish_job(candidate_job_id text, expected_lease timestamptz, failure text default null)
 returns void
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare current_job jobs%rowtype;
 begin
-  select * into current_job from jobs where id=job_id for update;
+  select * into current_job from jobs where jobs.id=candidate_job_id for update;
   if current_job.id is null or current_job.leased_until is distinct from expected_lease then
     raise exception 'job lease is no longer valid';
   end if;
   if failure is null then
     update jobs set status='succeeded',leased_by=null,leased_until=null,last_error=null,updated_at=now()
-    where id=job_id;
+    where id=candidate_job_id;
   elsif current_job.attempt_count >= current_job.max_attempts then
     update jobs set status='dead_letter',leased_by=null,leased_until=null,last_error=left(failure,500),updated_at=now()
-    where id=job_id;
+    where id=candidate_job_id;
   else
     update jobs set status='retryable_failed',available_at=now()+make_interval(secs=>least(900,power(2,least(current_job.attempt_count,9))::int)),
       leased_by=null,leased_until=null,last_error=left(failure,500),updated_at=now()
-    where id=job_id;
+    where id=candidate_job_id;
   end if;
 end $$;
 grant execute on function app.lease_job(text,integer) to public;
 grant execute on function app.finish_job(text,timestamptz,text) to public;
-
-commit;

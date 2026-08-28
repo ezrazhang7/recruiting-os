@@ -15,5 +15,12 @@ export interface JobQueue {
   leaseNext(workerId: string, leaseSeconds?: number): Promise<Job | undefined>;
   complete(job: Job): Promise<void>;
   fail(job: Job, error: unknown): Promise<void>;
+  stats(tenantId: string): Promise<{
+    queued: number;
+    running: number;
+    retryableFailed: number;
+    deadLetter: number;
+    oldestReadyAgeSeconds: number;
+  }>;
   close(): Promise<void>;
 }

@@ -7,6 +7,7 @@ import {
   type Claim,
   type Organization,
   type Opportunity,
+  type OpportunityOverride,
   type ProcessingFailure,
   type SourceItem,
   type SourceType,
@@ -17,12 +18,14 @@ import { stableId } from '../../../lib/util';
 
 function hashSource(source: SourceItem): string {
   return createHash('sha256')
-    .update(JSON.stringify({
-      rawText: source.rawText,
-      media: source.media,
-      publishedAt: source.publishedAt ?? null,
-      metadata: source.metadata ?? {},
-    }))
+    .update(
+      JSON.stringify({
+        rawText: source.rawText,
+        media: source.media,
+        publishedAt: source.publishedAt ?? null,
+        metadata: source.metadata ?? {},
+      }),
+    )
     .digest('hex');
 }
 
@@ -55,7 +58,9 @@ export class PostgresStore implements RecruitingRepository {
     });
   }
 
-  async close(): Promise<void> { await this.pool.end(); }
+  async close(): Promise<void> {
+    await this.pool.end();
+  }
 
   async transaction<T>(operation: () => Promise<T>): Promise<T> {
     if (this.transactions.getStore()) return operation();
@@ -80,10 +85,9 @@ export class PostgresStore implements RecruitingRepository {
   ): Promise<void> {
     await this.transaction(async () => {
       const client = this.client();
-      await client.query(
-        `insert into tenants(id,name) values($1,$1) on conflict(id) do nothing`,
-        [tenantId],
-      );
+      await client.query(`insert into tenants(id,name) values($1,$1) on conflict(id) do nothing`, [
+        tenantId,
+      ]);
       await this.setTenant(client, tenantId);
       await client.query(
         `insert into organizations(
@@ -95,25 +99,43 @@ export class PostgresStore implements RecruitingRepository {
           website_url=coalesce(excluded.website_url,organizations.website_url),
           instagram_handle=coalesce(excluded.instagram_handle,organizations.instagram_handle),
           linkedin_url=coalesce(excluded.linkedin_url,organizations.linkedin_url),updated_at=now()`,
-        [tenantId, organization.id, organization.name, organization.school,
-          organization.heelLifeUrl ?? null, organization.websiteUrl ?? null,
-          organization.instagramHandle ?? null, organization.linkedinUrl ?? null],
+        [
+          tenantId,
+          organization.id,
+          organization.name,
+          organization.school,
+          organization.heelLifeUrl ?? null,
+          organization.websiteUrl ?? null,
+          organization.instagramHandle ?? null,
+          organization.linkedinUrl ?? null,
+        ],
       );
     });
   }
 
-  async getOrganization(id: string, tenantId = this.defaultTenantId): Promise<Organization | undefined> {
+  async getOrganization(
+    id: string,
+    tenantId = this.defaultTenantId,
+  ): Promise<Organization | undefined> {
     return this.withTenant(tenantId, async (client) => {
-      const row = (await client.query('select * from organizations where tenant_id=$1 and id=$2',
-        [tenantId, id])).rows[0];
+      const row = (
+        await client.query('select * from organizations where tenant_id=$1 and id=$2', [
+          tenantId,
+          id,
+        ])
+      ).rows[0];
       return row ? this.mapOrganization(row) : undefined;
     });
   }
 
   async listOrganizations(tenantId = this.defaultTenantId): Promise<Organization[]> {
     return this.withTenant(tenantId, async (client) =>
-      (await client.query('select * from organizations where tenant_id=$1 order by name', [tenantId]))
-        .rows.map((row) => this.mapOrganization(row)));
+      (
+        await client.query('select * from organizations where tenant_id=$1 order by name', [
+          tenantId,
+        ])
+      ).rows.map((row) => this.mapOrganization(row)),
+    );
   }
 
   async stageSource(
@@ -121,7 +143,10 @@ export class PostgresStore implements RecruitingRepository {
     tenantId = source.tenantId ?? this.defaultTenantId,
   ): Promise<StageSourceResult> {
     const sourceIdentity = identity(source);
-    const sourceId = stableId('src', `${tenantId}:${source.organizationId}:${source.sourceType}:${sourceIdentity}`);
+    const sourceId = stableId(
+      'src',
+      `${tenantId}:${source.organizationId}:${source.sourceType}:${sourceIdentity}`,
+    );
     const contentHash = hashSource(source);
     const versionId = stableId('srcv', `${sourceId}:${contentHash}`);
     return this.withTenant(tenantId, async (client) => {
@@ -131,8 +156,16 @@ export class PostgresStore implements RecruitingRepository {
         ) values($1,$2,$3,$4,$5,$6,$7,$8)
         on conflict(tenant_id,organization_id,source_type,identity_key) do update set
           external_id=excluded.external_id,url=excluded.url,title=excluded.title,last_seen_at=now()`,
-        [sourceId, tenantId, source.organizationId, source.sourceType, sourceIdentity,
-          source.externalId ?? null, source.url ?? null, source.title ?? null],
+        [
+          sourceId,
+          tenantId,
+          source.organizationId,
+          source.sourceType,
+          sourceIdentity,
+          source.externalId ?? null,
+          source.url ?? null,
+          source.title ?? null,
+        ],
       );
       await client.query(
         `insert into source_versions(
@@ -140,14 +173,25 @@ export class PostgresStore implements RecruitingRepository {
           fetched_at,metadata,status
         ) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'received')
         on conflict(source_id,content_hash) do nothing`,
-        [versionId, sourceId, tenantId, source.organizationId, contentHash, source.rawText,
-          JSON.stringify(source.media), source.publishedAt ?? null, source.fetchedAt,
-          JSON.stringify(source.metadata ?? {})],
+        [
+          versionId,
+          sourceId,
+          tenantId,
+          source.organizationId,
+          contentHash,
+          source.rawText,
+          JSON.stringify(source.media),
+          source.publishedAt ?? null,
+          source.fetchedAt,
+          JSON.stringify(source.metadata ?? {}),
+        ],
       );
-      const row = (await client.query<{ status: SourceVersionStatus; attempt_count: number }>(
-        'select status,attempt_count from source_versions where tenant_id=$1 and id=$2',
-        [tenantId, versionId],
-      )).rows[0];
+      const row = (
+        await client.query<{ status: SourceVersionStatus; attempt_count: number }>(
+          'select status,attempt_count from source_versions where tenant_id=$1 and id=$2',
+          [tenantId, versionId],
+        )
+      ).rows[0];
       if (!row) throw new Error('Failed to stage source version');
       const shouldProcess = row.status === 'received' || row.status === 'retryable_failed';
       if (shouldProcess) {
@@ -169,13 +213,15 @@ export class PostgresStore implements RecruitingRepository {
 
   async markSourceProcessing(versionId: string, tenantId = this.defaultTenantId): Promise<number> {
     return this.withTenant(tenantId, async (client) => {
-      const row = (await client.query<{ attempt_count: number }>(
-        `update source_versions set status='processing',attempt_count=attempt_count+1,
+      const row = (
+        await client.query<{ attempt_count: number }>(
+          `update source_versions set status='processing',attempt_count=attempt_count+1,
           started_at=now(),last_error=null
          where tenant_id=$1 and id=$2 and status in ('queued','retryable_failed','received')
          returning attempt_count`,
-        [tenantId, versionId],
-      )).rows[0];
+          [tenantId, versionId],
+        )
+      ).rows[0];
       if (!row) throw new Error('Source version is not ready for processing');
       return row.attempt_count;
     });
@@ -200,28 +246,44 @@ export class PostgresStore implements RecruitingRepository {
       await client.query(
         `update source_versions set status=$3,last_error=$4,next_attempt_at=$5,completed_at=now()
          where tenant_id=$1 and id=$2`,
-        [tenantId, versionId, failure.retryable ? 'retryable_failed' : 'terminal_failed',
-          failure.message.slice(0, 500), failure.nextAttemptAt ?? null],
+        [
+          tenantId,
+          versionId,
+          failure.retryable ? 'retryable_failed' : 'terminal_failed',
+          failure.message.slice(0, 500),
+          failure.nextAttemptAt ?? null,
+        ],
       );
     });
   }
 
   async getSource(id: string, tenantId = this.defaultTenantId): Promise<SourceItem | undefined> {
     return this.withTenant(tenantId, async (client) => {
-      const row = (await client.query(
-        `select v.id as version_id,v.organization_id,s.source_type,s.external_id,s.url,s.title,
+      const row = (
+        await client.query(
+          `select v.id as version_id,v.organization_id,s.source_type,s.external_id,s.url,s.title,
           v.raw_text,v.media,v.published_at,v.fetched_at,v.metadata,v.tenant_id
          from source_versions v join sources s on s.id=v.source_id
          where v.tenant_id=$1 and (v.id=$2 or s.id=$2) order by v.fetched_at desc limit 1`,
-        [tenantId, id],
-      )).rows[0];
-      return row ? {
-        id: row.version_id, tenantId: row.tenant_id, organizationId: row.organization_id,
-        sourceType: row.source_type as SourceType, externalId: row.external_id ?? undefined,
-        url: row.url ?? undefined, title: row.title ?? undefined, rawText: row.raw_text,
-        media: row.media, publishedAt: row.published_at?.toISOString(),
-        fetchedAt: row.fetched_at.toISOString(), metadata: row.metadata,
-      } : undefined;
+          [tenantId, id],
+        )
+      ).rows[0];
+      return row
+        ? {
+            id: row.version_id,
+            tenantId: row.tenant_id,
+            organizationId: row.organization_id,
+            sourceType: row.source_type as SourceType,
+            externalId: row.external_id ?? undefined,
+            url: row.url ?? undefined,
+            title: row.title ?? undefined,
+            rawText: row.raw_text,
+            media: row.media,
+            publishedAt: row.published_at?.toISOString(),
+            fetchedAt: row.fetched_at.toISOString(),
+            metadata: row.metadata,
+          }
+        : undefined;
     });
   }
 
@@ -231,13 +293,24 @@ export class PostgresStore implements RecruitingRepository {
         await client.query(
           `insert into claims(
             id,tenant_id,organization_id,source_version_id,field,value,confidence,published_at,
-            extracted_at,supersedes,evidence
-          ) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+            extracted_at,supersedes,evidence,temporal_precision
+          ) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
           on conflict(source_version_id,field,value) do update set
             confidence=excluded.confidence,evidence=excluded.evidence,extracted_at=excluded.extracted_at`,
-          [claim.id, claim.tenantId ?? tenantId, claim.organizationId, claim.sourceItemId, claim.field,
-            JSON.stringify(claim.value), claim.confidence, claim.publishedAt ?? null, claim.extractedAt,
-            JSON.stringify(claim.supersedes ?? []), claim.evidence ?? null],
+          [
+            claim.id,
+            claim.tenantId ?? tenantId,
+            claim.organizationId,
+            claim.sourceItemId,
+            claim.field,
+            JSON.stringify(claim.value),
+            claim.confidence,
+            claim.publishedAt ?? null,
+            claim.extractedAt,
+            JSON.stringify(claim.supersedes ?? []),
+            claim.evidence ?? null,
+            claim.temporalPrecision ?? null,
+          ],
         );
       }
     });
@@ -245,17 +318,27 @@ export class PostgresStore implements RecruitingRepository {
 
   async listClaims(organizationId: string, tenantId = this.defaultTenantId): Promise<Claim[]> {
     return this.withTenant(tenantId, async (client) =>
-      (await client.query(
-        `select * from claims where tenant_id=$1 and organization_id=$2
+      (
+        await client.query(
+          `select * from claims where tenant_id=$1 and organization_id=$2
          order by coalesce(published_at,extracted_at)`,
-        [tenantId, organizationId],
-      )).rows.map((row) => ({
-        id: row.id, tenantId: row.tenant_id, organizationId: row.organization_id,
-        sourceItemId: row.source_version_id, field: row.field, value: row.value,
-        confidence: row.confidence, publishedAt: row.published_at?.toISOString(),
-        extractedAt: row.extracted_at.toISOString(), supersedes: row.supersedes,
+          [tenantId, organizationId],
+        )
+      ).rows.map((row) => ({
+        id: row.id,
+        tenantId: row.tenant_id,
+        organizationId: row.organization_id,
+        sourceItemId: row.source_version_id,
+        field: row.field,
+        value: row.value,
+        confidence: row.confidence,
+        publishedAt: row.published_at?.toISOString(),
+        extractedAt: row.extracted_at.toISOString(),
+        supersedes: row.supersedes,
         evidence: row.evidence ?? undefined,
-      })));
+        temporalPrecision: row.temporal_precision ?? undefined,
+      })),
+    );
   }
 
   async replaceOpportunities(
@@ -264,42 +347,122 @@ export class PostgresStore implements RecruitingRepository {
     tenantId = this.defaultTenantId,
   ): Promise<void> {
     await this.withTenant(tenantId, async (client) => {
-      await client.query('delete from opportunities where tenant_id=$1 and organization_id=$2',
-        [tenantId, organizationId]);
+      await client.query('delete from opportunities where tenant_id=$1 and organization_id=$2', [
+        tenantId,
+        organizationId,
+      ]);
       for (const opportunity of opportunities) {
         await client.query(
           `insert into opportunities(
             id,tenant_id,organization_id,kind,title,deadline_at,starts_at,url,role,confidence,stale,
-            source_claim_ids,explanation,resolver_version,resolved_at
-          ) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-          [opportunity.id, opportunity.tenantId ?? tenantId, opportunity.organizationId,
-            opportunity.kind, opportunity.title, opportunity.deadlineAt ?? null,
-            opportunity.startsAt ?? null, opportunity.url ?? null, opportunity.role ?? null,
-            opportunity.confidence, opportunity.stale, JSON.stringify(opportunity.sourceClaimIds),
-            opportunity.explanation, opportunity.resolverVersion ?? 'resolver-v2', opportunity.resolvedAt],
+            source_claim_ids,explanation,resolver_version,resolved_at,deadline_precision,starts_at_precision
+          ) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+          [
+            opportunity.id,
+            opportunity.tenantId ?? tenantId,
+            opportunity.organizationId,
+            opportunity.kind,
+            opportunity.title,
+            opportunity.deadlineAt ?? null,
+            opportunity.startsAt ?? null,
+            opportunity.url ?? null,
+            opportunity.role ?? null,
+            opportunity.confidence,
+            opportunity.stale,
+            JSON.stringify(opportunity.sourceClaimIds),
+            opportunity.explanation,
+            opportunity.resolverVersion ?? 'resolver-v2',
+            opportunity.resolvedAt,
+            opportunity.deadlinePrecision ?? null,
+            opportunity.startsAtPrecision ?? null,
+          ],
         );
       }
     });
   }
 
-  async listOpportunities(organizationId?: string, tenantId = this.defaultTenantId): Promise<Opportunity[]> {
+  async listOpportunities(
+    organizationId?: string,
+    tenantId = this.defaultTenantId,
+  ): Promise<Opportunity[]> {
     return this.withTenant(tenantId, async (client) => {
       const result = organizationId
         ? await client.query(
             `select * from opportunities where tenant_id=$1 and organization_id=$2
-             order by coalesce(deadline_at,starts_at)`, [tenantId, organizationId])
+             order by coalesce(deadline_at,starts_at)`,
+            [tenantId, organizationId],
+          )
         : await client.query(
             `select * from opportunities where tenant_id=$1 order by coalesce(deadline_at,starts_at)`,
-            [tenantId]);
+            [tenantId],
+          );
       return result.rows.map((row) => ({
-        id: row.id, tenantId: row.tenant_id, organizationId: row.organization_id,
-        kind: row.kind, title: row.title, deadlineAt: row.deadline_at?.toISOString(),
-        startsAt: row.starts_at?.toISOString(), url: row.url ?? undefined, role: row.role ?? undefined,
-        confidence: row.confidence, stale: row.stale, sourceClaimIds: row.source_claim_ids,
-        explanation: row.explanation, resolverVersion: row.resolver_version,
+        id: row.id,
+        tenantId: row.tenant_id,
+        organizationId: row.organization_id,
+        kind: row.kind,
+        title: row.title,
+        deadlineAt: row.deadline_at?.toISOString(),
+        startsAt: row.starts_at?.toISOString(),
+        url: row.url ?? undefined,
+        role: row.role ?? undefined,
+        confidence: row.confidence,
+        stale: row.stale,
+        sourceClaimIds: row.source_claim_ids,
+        explanation: row.explanation,
+        resolverVersion: row.resolver_version,
         resolvedAt: row.resolved_at.toISOString(),
+        deadlinePrecision: row.deadline_precision ?? undefined,
+        startsAtPrecision: row.starts_at_precision ?? undefined,
       }));
     });
+  }
+
+  async putOpportunityOverride(
+    override: OpportunityOverride,
+    tenantId = override.tenantId ?? this.defaultTenantId,
+  ): Promise<void> {
+    await this.withTenant(tenantId, async (client) => {
+      await client.query(
+        `insert into opportunity_overrides(
+          id,tenant_id,opportunity_id,organization_id,actor_id,patch,reason,created_at
+        ) values($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [
+          override.id,
+          tenantId,
+          override.opportunityId,
+          override.organizationId,
+          override.actorId,
+          JSON.stringify(override.patch),
+          override.reason,
+          override.createdAt,
+        ],
+      );
+    });
+  }
+
+  async listOpportunityOverrides(
+    organizationId: string,
+    tenantId = this.defaultTenantId,
+  ): Promise<OpportunityOverride[]> {
+    return this.withTenant(tenantId, async (client) =>
+      (
+        await client.query(
+          `select * from opportunity_overrides
+           where tenant_id=$1 and organization_id=$2 and revoked_at is null order by created_at`,
+          [tenantId, organizationId],
+        )
+      ).rows.map((row) => ({
+        id: row.id,
+        tenantId: row.tenant_id,
+        opportunityId: row.opportunity_id,
+        organizationId: row.organization_id,
+        actorId: row.actor_id,
+        patch: row.patch,
+        reason: row.reason,
+        createdAt: row.created_at.toISOString(),
+      })),
+    );
   }
 
   async getConnectorState(
@@ -308,10 +471,12 @@ export class PostgresStore implements RecruitingRepository {
     tenantId = this.defaultTenantId,
   ): Promise<{ cursor?: string; metadata: Record<string, unknown> }> {
     return this.withTenant(tenantId, async (client) => {
-      const row = (await client.query(
-        `select cursor,metadata from connector_state where tenant_id=$1 and connector=$2 and scope=$3`,
-        [tenantId, connector, scope],
-      )).rows[0];
+      const row = (
+        await client.query(
+          `select cursor,metadata from connector_state where tenant_id=$1 and connector=$2 and scope=$3`,
+          [tenantId, connector, scope],
+        )
+      ).rows[0];
       return row ? { cursor: row.cursor ?? undefined, metadata: row.metadata } : { metadata: {} };
     });
   }
@@ -361,9 +526,14 @@ export class PostgresStore implements RecruitingRepository {
 
   private mapOrganization(row: QueryResultRow): Organization {
     return {
-      id: row.id, tenantId: row.tenant_id, name: row.name, school: row.school,
-      heelLifeUrl: row.heel_life_url ?? undefined, websiteUrl: row.website_url ?? undefined,
-      instagramHandle: row.instagram_handle ?? undefined, linkedinUrl: row.linkedin_url ?? undefined,
+      id: row.id,
+      tenantId: row.tenant_id,
+      name: row.name,
+      school: row.school,
+      heelLifeUrl: row.heel_life_url ?? undefined,
+      websiteUrl: row.website_url ?? undefined,
+      instagramHandle: row.instagram_handle ?? undefined,
+      linkedinUrl: row.linkedin_url ?? undefined,
     };
   }
 }

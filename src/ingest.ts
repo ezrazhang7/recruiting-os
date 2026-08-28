@@ -41,6 +41,7 @@ export class IngestionService {
         publishedAt: source.publishedAt,
         extractedAt: nowIso(),
         evidence: claim.evidence,
+        temporalPrecision: claim.temporalPrecision,
       }));
 
       await this.store.transaction(async () => {

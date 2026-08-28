@@ -24,12 +24,8 @@ export type ClaimField =
   | 'recruiting_note';
 
 export type SourceVersionStatus =
-  | 'received'
-  | 'queued'
-  | 'processing'
-  | 'succeeded'
-  | 'retryable_failed'
-  | 'terminal_failed';
+  'received' | 'queued' | 'processing' | 'succeeded' | 'retryable_failed' | 'terminal_failed';
+export type TemporalPrecision = 'date' | 'date_time' | 'relative_inferred';
 
 export interface Organization {
   id: string;
@@ -86,6 +82,7 @@ export interface Claim {
   extractedAt: string;
   evidence?: string;
   supersedes?: string[];
+  temporalPrecision?: TemporalPrecision;
 }
 
 export interface Opportunity {
@@ -104,6 +101,19 @@ export interface Opportunity {
   explanation: string;
   resolvedAt: string;
   resolverVersion?: string;
+  deadlinePrecision?: TemporalPrecision;
+  startsAtPrecision?: TemporalPrecision;
+}
+
+export interface OpportunityOverride {
+  id: string;
+  tenantId: string;
+  opportunityId: string;
+  organizationId: string;
+  actorId: string;
+  patch: Partial<Pick<Opportunity, 'title' | 'deadlineAt' | 'startsAt' | 'url' | 'stale'>>;
+  reason: string;
+  createdAt: string;
 }
 
 export interface ExtractionResult {
@@ -112,6 +122,7 @@ export interface ExtractionResult {
     value: unknown;
     confidence: number;
     evidence?: string;
+    temporalPrecision?: TemporalPrecision;
   }>;
   discoveredUrls: string[];
 }

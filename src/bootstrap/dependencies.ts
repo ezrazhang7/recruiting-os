@@ -16,18 +16,82 @@ import { SqliteCredentialRepository } from '../infrastructure/credentials/sqlite
 import { PostgresAuditLog } from '../infrastructure/observability/postgres-audit-log';
 import { SqliteAuditLog } from '../infrastructure/observability/sqlite-audit-log';
 
-export interface RuntimeDependencies {repository:RecruitingRepository;authRepository:AuthRepository;queue:JobQueue;credentialVault:CredentialVault;auditLog:AuditLog;close():Promise<void>;}
-export function createDependencies(config:AppConfig):RuntimeDependencies{
-  if(config.database.driver==='postgres'){
-    if(!config.database.url)throw new Error('DATABASE_URL is required for Postgres');
-    const repository=new PostgresStore({connectionString:config.database.url,maxConnections:config.database.poolSize,defaultTenantId:config.defaultTenantId});
-    const authRepository=new PostgresAuthRepository(config.database.url,Math.max(2,Math.floor(config.database.poolSize/2)));
-    const queue=new PostgresJobQueue(config.database.url,Math.max(2,Math.floor(config.database.poolSize/2)));
-    const credentialRepository=new PostgresCredentialRepository(config.database.url,Math.max(2,Math.floor(config.database.poolSize/3)));const credentialVault=new EncryptedCredentialVault(credentialRepository,config.auth.credentialMasterKey,config.auth.credentialKeyVersion);
-    const auditLog=new PostgresAuditLog(config.database.url);return{repository,authRepository,queue,credentialVault,auditLog,close:async()=>{await Promise.all([repository.close(),authRepository.close(),queue.close(),credentialRepository.close(),auditLog.close()]);}};
+export interface RuntimeDependencies {
+  repository: RecruitingRepository;
+  authRepository: AuthRepository;
+  queue: JobQueue;
+  credentialVault: CredentialVault;
+  auditLog: AuditLog;
+  close(): Promise<void>;
+}
+export function createDependencies(config: AppConfig): RuntimeDependencies {
+  if (config.database.driver === 'postgres') {
+    if (!config.database.url) throw new Error('DATABASE_URL is required for Postgres');
+    const repository = new PostgresStore({
+      connectionString: config.database.url,
+      maxConnections: config.database.poolSize,
+      defaultTenantId: config.defaultTenantId,
+    });
+    const authRepository = new PostgresAuthRepository(
+      config.database.url,
+      Math.max(2, Math.floor(config.database.poolSize / 2)),
+    );
+    const queue = new PostgresJobQueue(
+      config.database.url,
+      Math.max(2, Math.floor(config.database.poolSize / 2)),
+    );
+    const credentialRepository = new PostgresCredentialRepository(
+      config.database.url,
+      Math.max(2, Math.floor(config.database.poolSize / 3)),
+    );
+    const credentialVault = new EncryptedCredentialVault(
+      credentialRepository,
+      config.auth.credentialMasterKey,
+      config.auth.credentialKeyVersion,
+    );
+    const auditLog = new PostgresAuditLog(config.database.url);
+    return {
+      repository,
+      authRepository,
+      queue,
+      credentialVault,
+      auditLog,
+      close: async () => {
+        await Promise.all([
+          repository.close(),
+          authRepository.close(),
+          queue.close(),
+          credentialRepository.close(),
+          auditLog.close(),
+        ]);
+      },
+    };
   }
-  if(config.environment==='production')throw new Error('SQLite cannot be used in production');
-  const repository=new Store(config.database.path,config.defaultTenantId);const authRepository=new SqliteAuthRepository(repository);const queue=new SqliteJobQueue(repository);
-  const credentialRepository=new SqliteCredentialRepository(repository);const credentialVault=new EncryptedCredentialVault(credentialRepository,config.auth.credentialMasterKey,config.auth.credentialKeyVersion);
-  const auditLog=new SqliteAuditLog(repository);return{repository,authRepository,queue,credentialVault,auditLog,close:async()=>{await Promise.all([authRepository.close(),queue.close(),credentialRepository.close(),auditLog.close()]);await repository.close();}};
+  if (config.environment === 'production') throw new Error('SQLite cannot be used in production');
+  const repository = new Store(config.database.path, config.defaultTenantId);
+  const authRepository = new SqliteAuthRepository(repository);
+  const queue = new SqliteJobQueue(repository);
+  const credentialRepository = new SqliteCredentialRepository(repository);
+  const credentialVault = new EncryptedCredentialVault(
+    credentialRepository,
+    config.auth.credentialMasterKey,
+    config.auth.credentialKeyVersion,
+  );
+  const auditLog = new SqliteAuditLog(repository);
+  return {
+    repository,
+    authRepository,
+    queue,
+    credentialVault,
+    auditLog,
+    close: async () => {
+      await Promise.all([
+        authRepository.close(),
+        queue.close(),
+        credentialRepository.close(),
+        auditLog.close(),
+      ]);
+      await repository.close();
+    },
+  };
 }
