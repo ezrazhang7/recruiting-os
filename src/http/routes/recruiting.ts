@@ -27,22 +27,16 @@ export function registerRecruitingRoutes(
   app.get('/api/admin/metrics', async (request, reply) => {
     const principal = authentication(request).principal;
     requireRole(principal, ['platform_admin']);
-    const jobStats = await queue.stats(principal.tenantId);
-    const queueMetrics = `# HELP recruiting_os_jobs Jobs by state for the authenticated tenant.
-# TYPE recruiting_os_jobs gauge
-recruiting_os_jobs{status="queued"} ${jobStats.queued}
-recruiting_os_jobs{status="running"} ${jobStats.running}
-recruiting_os_jobs{status="retryable_failed"} ${jobStats.retryableFailed}
-recruiting_os_jobs{status="dead_letter"} ${jobStats.deadLetter}
-recruiting_os_jobs{status="cancelled"} ${jobStats.cancelled}
-# HELP recruiting_os_oldest_ready_job_age_seconds Oldest ready job age.
-# TYPE recruiting_os_oldest_ready_job_age_seconds gauge
-recruiting_os_oldest_ready_job_age_seconds ${jobStats.oldestReadyAgeSeconds}
-`;
     return reply
       .type('text/plain; version=0.0.4; charset=utf-8')
-      .send((dependencies.metrics?.render() ?? '') + queueMetrics);
+      .send(await renderMetrics(dependencies, principal.tenantId));
   });
+
+  app.get('/metrics', async (_request, reply) =>
+    reply
+      .type('text/plain; version=0.0.4; charset=utf-8')
+      .send(await renderMetrics(dependencies, config.defaultTenantId)),
+  );
 
   app.get('/api/dashboard', async (request) => {
     const principal = authentication(request).principal;
@@ -230,4 +224,20 @@ recruiting_os_oldest_ready_job_age_seconds ${jobStats.oldestReadyAgeSeconds}
     reply.status(202);
     return { jobId: job.id, status: job.status };
   });
+}
+
+async function renderMetrics(dependencies: AppDependencies, tenantId: string): Promise<string> {
+  const jobStats = await dependencies.queue.stats(tenantId);
+  const queueMetrics = `# HELP recruiting_os_jobs Jobs by state for the configured tenant.
+# TYPE recruiting_os_jobs gauge
+recruiting_os_jobs{status="queued"} ${jobStats.queued}
+recruiting_os_jobs{status="running"} ${jobStats.running}
+recruiting_os_jobs{status="retryable_failed"} ${jobStats.retryableFailed}
+recruiting_os_jobs{status="dead_letter"} ${jobStats.deadLetter}
+recruiting_os_jobs{status="cancelled"} ${jobStats.cancelled}
+# HELP recruiting_os_oldest_ready_job_age_seconds Oldest ready job age.
+# TYPE recruiting_os_oldest_ready_job_age_seconds gauge
+recruiting_os_oldest_ready_job_age_seconds ${jobStats.oldestReadyAgeSeconds}
+`;
+  return (dependencies.metrics?.render() ?? '') + queueMetrics;
 }

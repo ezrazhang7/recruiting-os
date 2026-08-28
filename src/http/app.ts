@@ -2,6 +2,7 @@ import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { ZodError } from 'zod';
 import { AppError, AuthenticationError, RateLimitError } from '../domain/errors';
 import { MetricsRegistry } from '../infrastructure/observability/metrics';
@@ -24,6 +25,7 @@ const publicPaths = new Set([
 ]);
 const authenticationPaths = new Set(['/auth/login', '/auth/callback', '/auth/development']);
 const unsafeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+const probePaths = new Set(['/health/live', '/health/ready']);
 
 export async function buildApp(dependencies: AppDependencies): Promise<FastifyInstance> {
   const { config, sessionService, rateLimiter } = dependencies;
@@ -77,6 +79,14 @@ export async function buildApp(dependencies: AppDependencies): Promise<FastifyIn
 
   app.addHook('onRequest', async (request, reply) => {
     const path = request.url.split('?')[0] ?? request.url;
+    if (request.method === 'GET' && probePaths.has(path)) return;
+    if (request.method === 'GET' && path === '/metrics') {
+      const authorization = headerString(request.headers.authorization);
+      const candidate = authorization?.startsWith('Bearer ') ? authorization.slice(7) : undefined;
+      if (!secureTokenMatches(candidate, config.observability.metricsBearerToken))
+        throw new AuthenticationError();
+      return;
+    }
     const isAuthentication =
       authenticationPaths.has(path) ||
       (request.method === 'GET' && /^\/api\/connectors\/[^/]+\/callback$/.test(path));
@@ -186,4 +196,11 @@ function setRateLimitHeaders(
   reply
     .header('x-ratelimit-remaining', rate.remaining)
     .header('x-ratelimit-reset', Math.ceil(rate.resetAt / 1000));
+}
+
+function secureTokenMatches(candidate: string | undefined, expected: string | undefined): boolean {
+  if (!candidate || !expected) return false;
+  const candidateHash = createHash('sha256').update(candidate).digest();
+  const expectedHash = createHash('sha256').update(expected).digest();
+  return timingSafeEqual(candidateHash, expectedHash);
 }

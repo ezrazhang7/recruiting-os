@@ -38,6 +38,7 @@ const schema = z.object({
   CONNECTOR_SYNC_INTERVAL_SECONDS: z.coerce.number().int().min(300).max(86_400).default(900),
   TRUST_PROXY: booleanFromString.default(false),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
+  METRICS_BEARER_TOKEN: z.string().min(32).optional(),
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
   GOOGLE_REDIRECT_URI: z.string().url().optional(),
@@ -73,6 +74,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     }
     if (value.CREDENTIAL_MASTER_KEY === Buffer.alloc(32).toString('base64')) {
       throw new Error('Production CREDENTIAL_MASTER_KEY must be changed');
+    }
+    if (!value.METRICS_BEARER_TOKEN) {
+      throw new Error('Production METRICS_BEARER_TOKEN is required');
     }
     const allowedOrigins = value.ALLOWED_ORIGINS.split(',')
       .map((origin) => origin.trim())
@@ -121,6 +125,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     },
     trustProxy: value.TRUST_PROXY,
     logLevel: value.LOG_LEVEL,
+    observability: { metricsBearerToken: value.METRICS_BEARER_TOKEN },
     providers: {
       gmail: {
         clientId: value.GOOGLE_CLIENT_ID,

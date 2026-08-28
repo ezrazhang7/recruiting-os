@@ -46,7 +46,7 @@ Production startup fails closed unless all of the following are set:
 
 - `NODE_ENV=production`, `DATABASE_DRIVER=postgres`, and a TLS-capable `DATABASE_URL`.
 - `AUTH_MODE=oidc`, `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_REDIRECT_URI`, a non-development `SESSION_SECRET`, and the permitted email domain.
-- A 32-byte base64 `CREDENTIAL_MASTER_KEY` sourced from a secret manager, with a tracked key version.
+- A 32-byte base64 `CREDENTIAL_MASTER_KEY` and a distinct 32+ character `METRICS_BEARER_TOKEN`, both sourced from a secret manager.
 - Exact `ALLOWED_ORIGINS`, trusted-proxy configuration, provider OAuth credentials/redirects, and an optional OpenAI extraction key.
 
 See [.env.example](.env.example) for the complete contract. Do not commit `.env` or credentials.
@@ -77,7 +77,7 @@ fixture.
 
 ## API surface
 
-Public routes are limited to the UI assets, liveness/readiness, and OIDC/development-auth entry points. Authenticated routes cover the student dashboard, organizations, connector OAuth/status/revoke/sync, bounded ingestion queueing, admin evidence, reviewed opportunity overrides, and protected metrics. Mutations require CSRF and idempotent queue jobs.
+Public routes are limited to the UI assets, liveness/readiness, and OIDC/development-auth entry points. Authenticated routes cover the student dashboard, organizations, connector OAuth/status/revoke/sync, bounded ingestion queueing, admin evidence, reviewed opportunity overrides, and administrator metrics. The machine `/metrics` endpoint requires a constant-time-checked bearer credential. Mutations require CSRF and idempotent queue jobs.
 
 ## Data handling and incident response
 

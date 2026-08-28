@@ -12,6 +12,11 @@ Workers renew their lease while processing long jobs. A crashed worker's expired
 another worker until its configured final attempt, when it is dead-lettered. During a rollout, allow
 the configured 120-second termination grace period before forcefully terminating a worker.
 
+`/health/live` proves only that the API process can answer; it deliberately bypasses external
+dependencies so a database outage does not cause a restart loop. `/health/ready` checks the
+repository and durable queue and removes an unhealthy pod from service. Probe routes bypass public
+rate limiting so infrastructure checks cannot throttle one another.
+
 Rollback the application by restoring the previous immutable image. Do not run down migrations on production data. If a migration is incompatible, deploy a forward repair migration. Stop workers before a data restore.
 
 ## Alerts and first response
@@ -19,6 +24,22 @@ Rollback the application by restoring the previous immutable image. Do not run d
 Page the on-call engineer for: readiness failing for 5 minutes; HTTP 5xx above 2% for 10 minutes; p95 latency above 2 seconds; oldest ready job above 5 minutes; any dead-letter growth; database storage above 80%; backup older than 26 hours; or OIDC callback failures above 5%.
 
 First response: declare the incident, preserve request IDs and sanitized logs, stop ingestion workers if they amplify damage, verify database health and provider status, then choose rollback or forward repair. Never paste access tokens, screenshot contents, raw recruiting messages, or session cookies into incident chat.
+
+Prometheus alert inputs include:
+
+```promql
+histogram_quantile(0.95, sum by (le) (rate(recruiting_os_http_request_duration_ms_bucket[5m])))
+sum(rate(recruiting_os_http_requests_total{status=~"5.."}[10m])) / sum(rate(recruiting_os_http_requests_total[10m]))
+sum(rate(recruiting_os_http_requests_total{route="_auth_callback",status!~"2..|3.."}[10m])) / sum(rate(recruiting_os_http_requests_total{route="_auth_callback"}[10m]))
+```
+
+Configure the scraper to request `/metrics` with `Authorization: Bearer
+$METRICS_BEARER_TOKEN`, sourced from the production secret manager. It must not reuse a user session
+or connector token. Rotate this credential and validate that unauthenticated and stale credentials
+receive HTTP 401.
+
+Alert rules must also consume the exported queue gauges and the managed database, backup, and
+container-memory metrics. Validate each rule with a synthetic failure before release.
 
 ## Backup and recovery
 

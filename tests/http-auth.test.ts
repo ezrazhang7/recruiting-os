@@ -99,9 +99,9 @@ test('authenticated users behind one NAT are limited per user, not by the anonym
     (await app.inject({ url: '/api/dashboard', headers: { cookie: second.cookie } })).statusCode,
     200,
   );
-  assert.equal((await app.inject({ url: '/health/live' })).statusCode, 200);
-  assert.equal((await app.inject({ url: '/health/live' })).statusCode, 200);
-  assert.equal((await app.inject({ url: '/health/live' })).statusCode, 429);
+  assert.equal((await app.inject({ url: '/' })).statusCode, 200);
+  assert.equal((await app.inject({ url: '/' })).statusCode, 200);
+  assert.equal((await app.inject({ url: '/' })).statusCode, 429);
   await app.close();
   await store.close();
 });
@@ -111,6 +111,35 @@ test('anonymous protected-route probes remain IP-rate-limited', async () => {
   assert.equal((await app.inject({ url: '/api/dashboard' })).statusCode, 401);
   assert.equal((await app.inject({ url: '/api/dashboard' })).statusCode, 401);
   assert.equal((await app.inject({ url: '/api/dashboard' })).statusCode, 429);
+  await app.close();
+  await store.close();
+});
+
+test('health probes cannot be throttled by public traffic', async () => {
+  const { app, store } = await fixture({ RATE_LIMIT_PER_MINUTE: '1' });
+  assert.equal((await app.inject({ url: '/' })).statusCode, 200);
+  assert.equal((await app.inject({ url: '/' })).statusCode, 429);
+  assert.equal((await app.inject({ url: '/health/live' })).statusCode, 200);
+  assert.equal((await app.inject({ url: '/health/ready' })).statusCode, 200);
+  await app.close();
+  await store.close();
+});
+
+test('machine metrics use a dedicated bearer credential', async () => {
+  const token = 'metrics-test-token'.padEnd(32, 'x');
+  const { app, store } = await fixture({ METRICS_BEARER_TOKEN: token });
+  assert.equal((await app.inject({ url: '/metrics' })).statusCode, 401);
+  assert.equal(
+    (await app.inject({ url: '/metrics', headers: { authorization: 'Bearer wrong' } })).statusCode,
+    401,
+  );
+  const response = await app.inject({
+    url: '/metrics',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.match(response.body, /recruiting_os_http_requests_total/);
+  assert.match(response.body, /recruiting_os_jobs\{status="queued"\}/);
   await app.close();
   await store.close();
 });
