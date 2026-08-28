@@ -62,6 +62,7 @@ async function main() {
           userId: string;
           organizationId: string;
           scope?: string;
+          recurring?: boolean;
         };
         const credential = await dependencies.credentialVault.get(
           job.tenantId,
@@ -80,23 +81,12 @@ async function main() {
             credential.accessToken,
             config.connectorRuntime.gmailUserId,
           );
-          const state = await dependencies.repository.getConnectorState(
-            'gmail',
-            config.connectorRuntime.gmailUserId,
+          sources = await connector.synchronize(
+            dependencies.repository,
+            payload.organizationId,
+            `("${organization.name}" OR recruiting OR application)`,
             job.tenantId,
           );
-          sources = state.cursor
-            ? await connector.sync(
-                dependencies.repository,
-                () => payload.organizationId,
-                job.tenantId,
-              )
-            : await connector.initialize(
-                dependencies.repository,
-                payload.organizationId,
-                `("${organization.name}" OR recruiting OR application)`,
-                job.tenantId,
-              );
         } else if (payload.provider === 'groupme') {
           if (!payload.scope) throw new Error('GroupMe sync requires a group ID scope');
           sources = await new GroupMeConnector(credential.accessToken).syncGroup(
@@ -127,6 +117,21 @@ async function main() {
         for (const source of sources) {
           source.tenantId = job.tenantId;
           await ingestion.ingest(source, { followLinks: true, maxDepth: 2 });
+        }
+        if (payload.recurring !== false) {
+          const availableAt = new Date(
+            Date.now() + config.limits.connectorSyncIntervalSeconds * 1000,
+          ).toISOString();
+          const scheduleSlot = Math.floor(
+            new Date(availableAt).getTime() / (config.limits.connectorSyncIntervalSeconds * 1000),
+          );
+          await dependencies.queue.enqueue({
+            tenantId: job.tenantId,
+            type: 'connector.sync',
+            idempotencyKey: `scheduled:${payload.provider}:${payload.userId}:${payload.organizationId}:${payload.scope ?? ''}:${scheduleSlot}`,
+            payload: { ...payload, recurring: true },
+            availableAt,
+          });
         }
       } else throw new Error(`Unsupported job type: ${job.type}`);
       await dependencies.queue.complete(job);

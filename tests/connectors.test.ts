@@ -79,6 +79,21 @@ test('Gmail sync requires persisted history cursor', async () => {
   );
   await st.close();
 });
+test('Gmail synchronize recovers an expired history cursor with a bounded resync', async () => {
+  const st = new Store();
+  await st.setConnectorState('gmail', 'me', 'expired');
+  const http: any = async (input: any) => {
+    const url = String(input);
+    if (url.includes('/history?')) return jsonResponse({ error: 'expired' }, 404);
+    if (url.includes('/messages?')) return jsonResponse({ messages: [] });
+    if (url.endsWith('/profile')) return jsonResponse({ historyId: 'fresh' });
+    return jsonResponse({});
+  };
+  const sources = await new GmailConnector('x', 'me', http).synchronize(st, 'org', 'recruiting');
+  assert.deepEqual(sources, []);
+  assert.equal((await st.getConnectorState('gmail', 'me')).cursor, 'fresh');
+  await st.close();
+});
 
 test('Instagram business discovery parses carousel images', async () => {
   const http: any = async () =>

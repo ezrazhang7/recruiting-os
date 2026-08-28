@@ -151,4 +151,20 @@ export class GmailConnector {
     await store.setConnectorState('gmail', this.userId, String(profile.historyId), {}, tenantId);
     return out;
   }
+
+  async synchronize(
+    store: RecruitingRepository,
+    orgId: string,
+    query: string,
+    tenantId?: string,
+  ): Promise<SourceItem[]> {
+    const state = await store.getConnectorState('gmail', this.userId, tenantId);
+    if (!state.cursor) return this.initialize(store, orgId, query, tenantId);
+    try {
+      return await this.sync(store, () => orgId, tenantId);
+    } catch (error) {
+      if (!String(error).includes('history cursor expired')) throw error;
+      return this.initialize(store, orgId, query, tenantId);
+    }
+  }
 }

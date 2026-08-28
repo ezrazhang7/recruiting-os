@@ -365,6 +365,7 @@ export async function buildApp(dependencies: AppDependencies): Promise<FastifyIn
       .object({
         organizationId: z.string().min(2).max(80),
         scope: z.string().min(1).max(200).optional(),
+        recurring: z.boolean().default(true),
       })
       .strict()
       .parse(request.body);
