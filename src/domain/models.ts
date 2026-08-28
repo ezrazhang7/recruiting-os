@@ -162,6 +162,7 @@ export interface Job<T = Record<string, unknown>> {
   attemptCount: number;
   maxAttempts: number;
   availableAt: string;
+  leasedBy?: string;
   leasedUntil?: string;
 }
 

@@ -27,6 +27,7 @@ spec:
     metadata:
       labels: { app: recruiting-os, component: api }
     spec:
+      terminationGracePeriodSeconds: 120
       securityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
       containers:
         - name: api
@@ -70,6 +71,7 @@ spec:
     metadata:
       labels: { app: recruiting-os, component: worker }
     spec:
+      terminationGracePeriodSeconds: 120
       securityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
       containers:
         - name: worker

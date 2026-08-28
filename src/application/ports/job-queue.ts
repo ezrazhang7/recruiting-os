@@ -20,6 +20,7 @@ export interface JobQueue {
   enqueue(input: EnqueueJob): Promise<Job>;
   cancelPending(input: CancelPendingJobs): Promise<number>;
   leaseNext(workerId: string, leaseSeconds?: number): Promise<Job | undefined>;
+  renewLease(job: Job, leaseSeconds?: number): Promise<Job | undefined>;
   complete(job: Job): Promise<void>;
   fail(job: Job, error: unknown): Promise<void>;
   stats(tenantId: string): Promise<{

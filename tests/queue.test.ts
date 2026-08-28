@@ -4,6 +4,8 @@ import { SqliteJobQueue } from '../src/infrastructure/queue/sqlite-job-queue';
 import { Store } from '../src/store';
 import { ConnectorSyncScheduler } from '../src/application/connectors/connector-sync-scheduler';
 import type { CredentialVault } from '../src/application/ports/credential-vault';
+import type { JobQueue } from '../src/application/ports/job-queue';
+import { JobLeaseHeartbeat } from '../src/application/queue/job-lease-heartbeat';
 
 test('durable queue deduplicates, leases, retries, and dead-letters', async () => {
   const store = new Store();
@@ -47,6 +49,98 @@ test('queue leases fairly across tenants', async () => {
   assert.ok(second);
   assert.notEqual(first?.tenantId, second?.tenantId);
   await store.close();
+});
+
+test('expired running jobs are recovered and stale workers cannot settle them', async () => {
+  const store = new Store();
+  const queue = new SqliteJobQueue(store);
+  await queue.enqueue({
+    tenantId: 'tenant_default',
+    type: 'test',
+    idempotencyKey: 'recover-expired',
+    payload: {},
+    maxAttempts: 2,
+  });
+  const stale = await queue.leaseNext('worker-a', 30);
+  assert.equal(stale?.leasedBy, 'worker-a');
+  store.db
+    .prepare('update jobs set leased_until=? where id=?')
+    .run(new Date(0).toISOString(), stale!.id);
+
+  const recovered = await queue.leaseNext('worker-b', 30);
+  assert.equal(recovered?.id, stale?.id);
+  assert.equal(recovered?.leasedBy, 'worker-b');
+  assert.equal(recovered?.attemptCount, 2);
+  await assert.rejects(queue.complete(stale!), /lease is no longer valid/);
+
+  const renewed = await queue.renewLease(recovered!, 60);
+  assert.ok(renewed);
+  assert.notEqual(renewed?.leasedUntil, recovered?.leasedUntil);
+  await queue.complete(renewed!);
+  assert.equal(
+    (store.db.prepare('select status from jobs where id=?').get(stale!.id) as { status: string })
+      .status,
+    'succeeded',
+  );
+  await store.close();
+});
+
+test('a crashed final attempt is dead-lettered instead of leased forever', async () => {
+  const store = new Store();
+  const queue = new SqliteJobQueue(store);
+  const queued = await queue.enqueue({
+    tenantId: 'tenant_default',
+    type: 'test',
+    idempotencyKey: 'final-expired',
+    payload: {},
+    maxAttempts: 1,
+  });
+  await queue.leaseNext('worker-a', 30);
+  store.db
+    .prepare('update jobs set leased_until=? where id=?')
+    .run(new Date(0).toISOString(), queued.id);
+
+  assert.equal(await queue.leaseNext('worker-b', 30), undefined);
+  const row = store.db.prepare('select status,last_error from jobs where id=?').get(queued.id) as {
+    status: string;
+    last_error: string;
+  };
+  assert.equal(row.status, 'dead_letter');
+  assert.match(row.last_error, /lease expired/i);
+  await store.close();
+});
+
+test('long-running work renews its lease through the heartbeat', async () => {
+  let renewals = 0;
+  const queue = {
+    renewLease: async (job) => {
+      renewals += 1;
+      return { ...job, leasedUntil: new Date(Date.now() + 60_000).toISOString() };
+    },
+  } as JobQueue;
+  const heartbeat = new JobLeaseHeartbeat(
+    queue,
+    {
+      id: 'job',
+      tenantId: 'tenant',
+      type: 'test',
+      idempotencyKey: 'heartbeat',
+      payload: {},
+      status: 'running',
+      attemptCount: 1,
+      maxAttempts: 3,
+      availableAt: new Date().toISOString(),
+      leasedBy: 'worker',
+      leasedUntil: new Date(Date.now() + 60_000).toISOString(),
+    },
+    60,
+    5,
+  );
+  heartbeat.start();
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  const owned = await heartbeat.stop();
+  assert.ok(owned);
+  assert.ok(renewals >= 1);
 });
 
 test('connector revocation cancels only matching pending sync jobs', async () => {

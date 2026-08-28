@@ -70,17 +70,26 @@ export class SqliteJobQueue implements JobQueue {
 
   async leaseNext(workerId: string, leaseSeconds = 60): Promise<Job | undefined> {
     return this.store.transaction(async () => {
+      this.store.db
+        .prepare(
+          `update jobs set status='dead_letter',leased_by=null,leased_until=null,
+           last_error='Worker lease expired after final attempt',updated_at=?
+           where status='running' and leased_until<? and attempt_count>=max_attempts`,
+        )
+        .run(nowIso(), nowIso());
       const row = this.store.db
         .prepare(
           `with ranked as (
         select id,row_number() over(partition by tenant_id order by priority asc,created_at asc) as tenant_rank
-        from jobs where status in ('queued','retryable_failed') and available_at<=? and (leased_until is null or leased_until<?)
+        from jobs where
+          (status in ('queued','retryable_failed') and available_at<=? and (leased_until is null or leased_until<?))
+          or (status='running' and leased_until<? and attempt_count<max_attempts)
       ) select j.* from jobs j join ranked r on r.id=j.id
         left join tenant_queue_state t on t.tenant_id=j.tenant_id where r.tenant_rank=1
         order by coalesce(t.last_leased_at,'1970-01-01T00:00:00.000Z') asc,
         j.priority asc,j.created_at asc limit 1`,
         )
-        .get(nowIso(), nowIso()) as Record<string, unknown> | undefined;
+        .get(nowIso(), nowIso(), nowIso()) as Record<string, unknown> | undefined;
       if (!row) return undefined;
       const leasedUntil = new Date(Date.now() + leaseSeconds * 1000).toISOString();
       this.store.db
@@ -100,26 +109,42 @@ export class SqliteJobQueue implements JobQueue {
         status: 'running',
         attempt_count: Number(row.attempt_count) + 1,
         leased_until: leasedUntil,
+        leased_by: workerId,
       });
     });
   }
 
+  async renewLease(job: Job, leaseSeconds = 60): Promise<Job | undefined> {
+    if (!job.leasedBy || !job.leasedUntil) return undefined;
+    const renewedUntil = new Date(Date.now() + leaseSeconds * 1000).toISOString();
+    const changed = this.store.db
+      .prepare(
+        `update jobs set leased_until=?,updated_at=? where id=? and status='running'
+         and leased_by=? and leased_until=? and leased_until>?`,
+      )
+      .run(renewedUntil, nowIso(), job.id, job.leasedBy, job.leasedUntil, nowIso()).changes;
+    return changed ? { ...job, leasedUntil: renewedUntil } : undefined;
+  }
+
   async complete(job: Job): Promise<void> {
-    this.store.db
+    if (!job.leasedBy || !job.leasedUntil) throw new Error('Job lease is missing');
+    const changed = this.store.db
       .prepare(
         `update jobs set status='succeeded',leased_by=null,leased_until=null,last_error=null,updated_at=?
-      where id=? and leased_until=?`,
+      where id=? and status='running' and leased_by=? and leased_until=? and leased_until>?`,
       )
-      .run(nowIso(), job.id, job.leasedUntil ?? null);
+      .run(nowIso(), job.id, job.leasedBy, job.leasedUntil, nowIso()).changes;
+    if (!changed) throw new Error('Job lease is no longer valid');
   }
 
   async fail(job: Job, error: unknown): Promise<void> {
+    if (!job.leasedBy || !job.leasedUntil) throw new Error('Job lease is missing');
     const terminal = job.attemptCount >= job.maxAttempts;
     const delay = Math.min(900, 2 ** Math.min(job.attemptCount, 9));
-    this.store.db
+    const changed = this.store.db
       .prepare(
         `update jobs set status=?,available_at=?,leased_by=null,leased_until=null,last_error=?,updated_at=?
-      where id=?`,
+      where id=? and status='running' and leased_by=? and leased_until=? and leased_until>?`,
       )
       .run(
         terminal ? 'dead_letter' : 'retryable_failed',
@@ -127,7 +152,11 @@ export class SqliteJobQueue implements JobQueue {
         (error instanceof Error ? error.message : String(error)).slice(0, 500),
         nowIso(),
         job.id,
-      );
+        job.leasedBy,
+        job.leasedUntil,
+        nowIso(),
+      ).changes;
+    if (!changed) throw new Error('Job lease is no longer valid');
   }
 
   async stats(tenantId: string) {
@@ -166,6 +195,7 @@ export class SqliteJobQueue implements JobQueue {
       attemptCount: Number(row.attempt_count),
       maxAttempts: Number(row.max_attempts),
       availableAt: String(row.available_at),
+      leasedBy: row.leased_by ? String(row.leased_by) : undefined,
       leasedUntil: row.leased_until ? String(row.leased_until) : undefined,
     };
   }

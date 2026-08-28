@@ -8,6 +8,10 @@
 4. Deploy one API canary, verify readiness, login, dashboard, ingestion enqueue, worker completion, and metrics.
 5. Roll the API and workers. Watch error rate, p95 latency, database connections, queue age, retry rate, dead letters, and OIDC failures for 30 minutes.
 
+Workers renew their lease while processing long jobs. A crashed worker's expired job is reclaimed by
+another worker until its configured final attempt, when it is dead-lettered. During a rollout, allow
+the configured 120-second termination grace period before forcefully terminating a worker.
+
 Rollback the application by restoring the previous immutable image. Do not run down migrations on production data. If a migration is incompatible, deploy a forward repair migration. Stop workers before a data restore.
 
 ## Alerts and first response

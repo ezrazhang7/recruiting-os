@@ -75,13 +75,28 @@ export class PostgresJobQueue implements JobQueue {
     ).rows[0];
     return row ? this.map(row) : undefined;
   }
-  async complete(job: Job): Promise<void> {
-    await this.pool.query('select app.finish_job($1,$2,null)', [job.id, job.leasedUntil]);
+  async renewLease(job: Job, leaseSeconds = 60): Promise<Job | undefined> {
+    if (!job.leasedBy || !job.leasedUntil) return undefined;
+    const row = (
+      await this.pool.query<{ leased_until: Date | null }>(
+        'select app.renew_job_lease($1,$2,$3,$4) as leased_until',
+        [job.id, job.leasedUntil, job.leasedBy, leaseSeconds],
+      )
+    ).rows[0];
+    return row?.leased_until ? { ...job, leasedUntil: row.leased_until.toISOString() } : undefined;
   }
-  async fail(job: Job, error: unknown): Promise<void> {
-    await this.pool.query('select app.finish_job($1,$2,$3)', [
+  async complete(job: Job): Promise<void> {
+    await this.pool.query('select app.finish_job($1,$2,$3,null)', [
       job.id,
       job.leasedUntil,
+      job.leasedBy,
+    ]);
+  }
+  async fail(job: Job, error: unknown): Promise<void> {
+    await this.pool.query('select app.finish_job($1,$2,$3,$4)', [
+      job.id,
+      job.leasedUntil,
+      job.leasedBy,
       (error instanceof Error ? error.message : String(error)).slice(0, 500),
     ]);
   }
@@ -135,6 +150,7 @@ export class PostgresJobQueue implements JobQueue {
       attemptCount: row.attempt_count,
       maxAttempts: row.max_attempts,
       availableAt: row.available_at.toISOString(),
+      leasedBy: row.leased_by ?? undefined,
       leasedUntil: row.leased_until?.toISOString(),
     };
   }

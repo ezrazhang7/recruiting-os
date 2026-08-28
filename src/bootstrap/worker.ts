@@ -19,6 +19,7 @@ import {
   type ConnectorSyncPayload,
 } from '../application/connectors/connector-sync-scheduler';
 import { z } from 'zod';
+import { JobLeaseHeartbeat } from '../application/queue/job-lease-heartbeat';
 
 const connectorSyncPayloadSchema = z.object({
   provider: z.enum(['gmail', 'groupme', 'instagram', 'linkedin']),
@@ -63,6 +64,10 @@ async function main() {
       await new Promise((resolve) => setTimeout(resolve, 500));
       continue;
     }
+    const heartbeat = new JobLeaseHeartbeat(dependencies.queue, job);
+    heartbeat.start();
+    let processingError: unknown;
+    let recurringPayload: ConnectorSyncPayload | undefined;
     try {
       if (job.type === 'ingest.url') {
         const payload = job.payload as { organizationId: string; url: string };
@@ -138,15 +143,46 @@ async function main() {
           source.tenantId = job.tenantId;
           await ingestion.ingest(source, { followLinks: true, maxDepth: 2 });
         }
-        await connectorScheduler.scheduleAfter(job, payload);
+        recurringPayload = payload;
       } else throw new Error(`Unsupported job type: ${job.type}`);
-      await dependencies.queue.complete(job);
-      logger.info({ jobId: job.id, type: job.type, tenantId: job.tenantId }, 'job completed');
     } catch (error) {
-      await dependencies.queue.fail(job, error);
+      processingError = error;
+    }
+    const ownedJob = await heartbeat.stop();
+    if (!ownedJob) {
+      logger.error(
+        { err: processingError, jobId: job.id, type: job.type, tenantId: job.tenantId },
+        'job lease lost; another worker will recover it',
+      );
+      continue;
+    }
+    if (!processingError && recurringPayload) {
+      try {
+        await connectorScheduler.scheduleAfter(ownedJob, recurringPayload);
+      } catch (error) {
+        processingError = error;
+      }
+    }
+    try {
+      if (processingError) {
+        await dependencies.queue.fail(ownedJob, processingError);
+        logger.error(
+          {
+            err: processingError,
+            jobId: job.id,
+            type: job.type,
+            tenantId: job.tenantId,
+          },
+          'job failed',
+        );
+      } else {
+        await dependencies.queue.complete(ownedJob);
+        logger.info({ jobId: job.id, type: job.type, tenantId: job.tenantId }, 'job completed');
+      }
+    } catch (error) {
       logger.error(
         { err: error, jobId: job.id, type: job.type, tenantId: job.tenantId },
-        'job failed',
+        'job settlement failed; the lease will be recovered',
       );
     }
   }

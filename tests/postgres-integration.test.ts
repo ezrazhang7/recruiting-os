@@ -88,6 +88,27 @@ test(
           1,
         );
         assert.ok((await queue.stats('tenant-a')).cancelled >= 1);
+
+        const recoverable = await queue.enqueue({
+          tenantId: 'tenant-a',
+          type: 'test',
+          idempotencyKey: `recover-${crypto.randomUUID()}`,
+          payload: {},
+          maxAttempts: 2,
+        });
+        const staleLease = await queue.leaseNext('worker-a', 30);
+        assert.equal(staleLease?.id, recoverable.id);
+        await admin.query("update jobs set leased_until=now()-interval '1 second' where id=$1", [
+          recoverable.id,
+        ]);
+        const recoveredLease = await queue.leaseNext('worker-b', 30);
+        assert.equal(recoveredLease?.id, recoverable.id);
+        assert.equal(recoveredLease?.leasedBy, 'worker-b');
+        assert.equal(recoveredLease?.attemptCount, 2);
+        await assert.rejects(queue.complete(staleLease!), /lease is no longer valid/);
+        const renewedLease = await queue.renewLease(recoveredLease!, 60);
+        assert.ok(renewedLease);
+        await queue.complete(renewedLease!);
       } finally {
         await queue.close();
       }
