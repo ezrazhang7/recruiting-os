@@ -25,7 +25,7 @@
     "check": "npm run typecheck && npm run lint && npm test && npm run audit"
   },
   "engines": {
-    "node": ">=22.12 <23"
+    "node": ">=22.22 <23"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
