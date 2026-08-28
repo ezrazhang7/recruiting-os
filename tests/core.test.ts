@@ -29,18 +29,18 @@ test('extracts closed form state',()=>assert.equal(heuristicExtract(src('This fo
 test('extracts application URL',()=>assert.equal(heuristicExtract(src('Apply here https://forms.gle/abc')).claims.find(c=>c.field==='application_url')?.value,'https://forms.gle/abc'));
 
 test('resolver marks past deadline stale',async()=>{
-  const st=new Store();st.upsertOrganization({id:'org1',name:'X',school:'UNC'});const ing=new IngestionService(st,fallbackExtractor);await ing.ingest(src('Applications are due August 20 at 11:59 PM'),{followLinks:false});
-  const o=resolveOrganization(st,'org1',new Date('2026-08-27T12:00:00Z')).find(x=>x.kind==='application'); assert.equal(o?.stale,true);st.close();
+  const st=new Store();await st.upsertOrganization({id:'org1',name:'X',school:'UNC'});const ing=new IngestionService(st,fallbackExtractor);await ing.ingest(src('Applications are due August 20 at 11:59 PM'),{followLinks:false});
+  const o=(await resolveOrganization(st,'org1',new Date('2026-08-27T12:00:00Z'))).find(x=>x.kind==='application'); assert.equal(o?.stale,true);await st.close();
 });
 test('newer open claim suppresses older deadline',async()=>{
-  const st=new Store();st.upsertOrganization({id:'org1',name:'X',school:'UNC'});const ing=new IngestionService(st,fallbackExtractor);
+  const st=new Store();await st.upsertOrganization({id:'org1',name:'X',school:'UNC'});const ing=new IngestionService(st,fallbackExtractor);
   await ing.ingest(src('Applications due August 20 at 11:59 PM',{id:'old',publishedAt:'2026-08-10T12:00:00Z'}),{followLinks:false});
   await ing.ingest(src('Applications are now open!',{id:'new',sourceType:'instagram',publishedAt:'2026-08-27T12:00:00Z'}),{followLinks:false});
-  const o=resolveOrganization(st,'org1',new Date('2026-08-27T12:00:00Z')).find(x=>x.kind==='application');assert.equal(o?.deadlineAt,undefined);assert.equal(o?.stale,false);st.close();
+  const o=(await resolveOrganization(st,'org1',new Date('2026-08-27T12:00:00Z'))).find(x=>x.kind==='application');assert.equal(o?.deadlineAt,undefined);assert.equal(o?.stale,false);await st.close();
 });
 test('explicit closed claim wins',async()=>{
-  const st=new Store();st.upsertOrganization({id:'org1',name:'X',school:'UNC'});const ing=new IngestionService(st,fallbackExtractor);
+  const st=new Store();await st.upsertOrganization({id:'org1',name:'X',school:'UNC'});const ing=new IngestionService(st,fallbackExtractor);
   await ing.ingest(src('Applications due September 30 at 11:59 PM',{id:'a',publishedAt:'2026-08-20T12:00:00Z'}),{followLinks:false});
   await ing.ingest(src('Applications are closed.',{id:'b',sourceType:'application',publishedAt:'2026-08-27T12:00:00Z'}),{followLinks:false});
-  assert.equal(resolveOrganization(st,'org1',new Date('2026-08-27T12:00:00Z')).find(x=>x.kind==='application')?.stale,true);st.close();
+  assert.equal((await resolveOrganization(st,'org1',new Date('2026-08-27T12:00:00Z'))).find(x=>x.kind==='application')?.stale,true);await st.close();
 });

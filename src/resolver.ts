@@ -1,5 +1,5 @@
 import type { Claim, Opportunity, SourceType } from './types';
-import type { Store } from './store';
+import type { RecruitingRepository } from './application/ports/recruiting-repository';
 import { nowIso, stableId } from './lib/util';
 
 const authority:Record<SourceType,number>={
@@ -7,8 +7,10 @@ const authority:Record<SourceType,number>={
   website:.78, bio_link:.75, screenshot:.72, heel_life:.55
 };
 
-function scoreClaim(c:Claim, store:Store):number {
-  const src=store.getSource(c.sourceItemId);
+export const RESOLVER_VERSION = 'resolver-v2';
+
+async function scoreClaim(c:Claim, store:RecruitingRepository, tenantId?: string):Promise<number> {
+  const src=await store.getSource(c.sourceItemId, tenantId);
   const a=src?authority[src.sourceType]:.5;
   const t=new Date(c.publishedAt??c.extractedAt).getTime();
   const ageDays=Math.max(0,(Date.now()-t)/86400000);
@@ -17,15 +19,23 @@ function scoreClaim(c:Claim, store:Store):number {
 }
 function newest<T extends Claim>(xs:T[]):T|undefined { return xs.slice().sort((a,b)=>new Date(b.publishedAt??b.extractedAt).getTime()-new Date(a.publishedAt??a.extractedAt).getTime())[0]; }
 
-export function resolveOrganization(store:Store, orgId:string, now=new Date()):Opportunity[] {
-  const claims=store.listClaims(orgId);
+export async function resolveOrganization(
+  store: RecruitingRepository,
+  orgId: string,
+  now = new Date(),
+  tenantId?: string,
+): Promise<Opportunity[]> {
+  const claims=await store.listClaims(orgId, tenantId);
+  const scores = new Map<string, number>();
+  await Promise.all(claims.map(async (claim) => scores.set(claim.id, await scoreClaim(claim, store, tenantId))));
+  const score = (claim: Claim | undefined) => claim ? (scores.get(claim.id) ?? 0) : 0;
   const out:Opportunity[]=[];
   const deadlines=claims.filter(c=>c.field==='application_deadline');
   const appUrls=claims.filter(c=>c.field==='application_url');
   const openClaims=claims.filter(c=>c.field==='application_open');
   const events=claims.filter(c=>c.field==='event');
-  const bestDeadline=deadlines.sort((a,b)=>scoreClaim(b,store)-scoreClaim(a,store))[0];
-  const bestUrl=appUrls.sort((a,b)=>scoreClaim(b,store)-scoreClaim(a,store))[0];
+  const bestDeadline=deadlines.sort((a,b)=>score(b)-score(a))[0];
+  const bestUrl=appUrls.sort((a,b)=>score(b)-score(a))[0];
   const latestOpen=newest(openClaims);
 
   if(bestDeadline || latestOpen){
@@ -39,17 +49,17 @@ export function resolveOrganization(store:Store, orgId:string, now=new Date()):O
     out.push({
       id:stableId('opp',`${orgId}:application`),organizationId:orgId,kind:'application',title:'Application',
       deadlineAt:reopened?undefined:deadlineAt,url:bestUrl?String(bestUrl.value):undefined,
-      confidence:Math.max(bestDeadline?scoreClaim(bestDeadline,store):0,latestOpen?scoreClaim(latestOpen,store):0),stale,
+      confidence:Math.max(score(bestDeadline),score(latestOpen)),stale,
       sourceClaimIds:[bestDeadline?.id,bestUrl?.id,latestOpen?.id].filter(Boolean) as string[],
       explanation: reopened?'A newer source says applications are open; older deadline suppressed until a current deadline is confirmed.' : explicitlyClosed?'The newest authoritative source says applications are closed.' : stale?'The best-supported deadline is in the past.' : 'Resolved from the highest-confidence application claims.',
-      resolvedAt:nowIso()
+      resolvedAt:nowIso(),resolverVersion:RESOLVER_VERSION
     });
   }
 
   for(const c of events){
     const v=c.value as any; if(!v||typeof v!=='object') continue;
-    out.push({id:stableId('opp',`${orgId}:event:${v.title}:${v.startsAt??''}`),organizationId:orgId,kind:'event',title:String(v.title??'Recruiting event'),startsAt:v.startsAt,url:v.url,confidence:scoreClaim(c,store),stale:v.startsAt?new Date(v.startsAt).getTime()<now.getTime():false,sourceClaimIds:[c.id],explanation:'Event extracted from recruiting source.',resolvedAt:nowIso()});
+    out.push({id:stableId('opp',`${orgId}:event:${v.title}:${v.startsAt??''}`),organizationId:orgId,kind:'event',title:String(v.title??'Recruiting event'),startsAt:v.startsAt,url:v.url,confidence:score(c),stale:v.startsAt?new Date(v.startsAt).getTime()<now.getTime():false,sourceClaimIds:[c.id],explanation:'Event extracted from recruiting source.',resolvedAt:nowIso(),resolverVersion:RESOLVER_VERSION});
   }
-  store.replaceOpportunities(orgId,out);
+  await store.replaceOpportunities(orgId,out,tenantId);
   return out;
 }

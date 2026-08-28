@@ -1,15 +1,16 @@
-import type { ExtractionResult, MediaRef, SourceItem, HttpClient } from './types';
+import type { ExtractionResult, SourceItem, HttpClient } from './types';
 import { combineDateTime, resolveRelativeWeekday } from './lib/date';
 import { extractUrls } from './lib/util';
+import { ProviderHttpClient } from './infrastructure/outbound-http/provider-http-client';
 
 function dateFromText(s:string,publishedAt?:string):string|undefined {
   const iso=s.match(/\b(20\d{2})[-/](\d{1,2})[-/](\d{1,2})\b/);
-  if(iso) return `${iso[1]}-${iso[2].padStart(2,'0')}-${iso[3].padStart(2,'0')}`;
+  if(iso?.[1]&&iso[2]&&iso[3]) return `${iso[1]}-${iso[2].padStart(2,'0')}-${iso[3].padStart(2,'0')}`;
   const months:Record<string,string>={jan:'01',january:'01',feb:'02',february:'02',mar:'03',march:'03',apr:'04',april:'04',may:'05',jun:'06',june:'06',jul:'07',july:'07',aug:'08',august:'08',sep:'09',sept:'09',september:'09',oct:'10',october:'10',nov:'11',november:'11',dec:'12',december:'12'};
   const m=s.match(/\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s*(20\d{2}))?/i);
-  if(m){ const year=m[3]??(publishedAt?String(new Date(publishedAt).getUTCFullYear()):String(new Date().getUTCFullYear())); return `${year}-${months[m[1].toLowerCase().replace('.','')]}-${m[2].padStart(2,'0')}`; }
+  if(m?.[1]&&m[2]){ const year=m[3]??(publishedAt?String(new Date(publishedAt).getUTCFullYear()):String(new Date().getUTCFullYear())); return `${year}-${months[m[1].toLowerCase().replace('.','')]}-${m[2].padStart(2,'0')}`; }
   const wd=s.match(/\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/i);
-  return wd ? resolveRelativeWeekday(wd[1],publishedAt) : undefined;
+  return wd?.[1] ? resolveRelativeWeekday(wd[1],publishedAt) : undefined;
 }
 
 function timeFromText(s:string):string|undefined {
@@ -55,7 +56,7 @@ export function heuristicExtract(source: SourceItem): ExtractionResult {
 }
 
 export class OpenAIExtractor {
-  constructor(private apiKey:string, private model='gpt-5-mini', private http:HttpClient=fetch) {}
+  constructor(private apiKey:string, private model='gpt-5-mini', private http:HttpClient=new ProviderHttpClient(new Set(['api.openai.com']),30_000,3).fetch) {}
   async extract(source: SourceItem):Promise<ExtractionResult> {
     if(!this.apiKey) return heuristicExtract(source);
     const media=source.media.filter(m=>m.type==='image'&&(m.url||m.base64));

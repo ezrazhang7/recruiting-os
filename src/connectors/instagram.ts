@@ -1,8 +1,9 @@
 import type { HttpClient, SourceItem, MediaRef } from '../types';
 import { nowIso, normalizeHandle, stableId } from '../lib/util';
+import { ProviderHttpClient } from '../infrastructure/outbound-http/provider-http-client';
 
 export class InstagramConnector {
-  constructor(private token:string,private igUserId:string,private apiVersion='v24.0',private http:HttpClient=fetch){}
+  constructor(private token:string,private igUserId:string,private apiVersion='v24.0',private http:HttpClient=new ProviderHttpClient(new Set(['graph.facebook.com'])).fetch){}
   private async get(url:string):Promise<any>{ const r=await this.http(url); if(!r.ok)throw new Error(`Instagram ${r.status}: ${await r.text()}`); return r.json(); }
   async businessDiscovery(handle:string,limit=25):Promise<{profile:any;sources:SourceItem[]}> {
     const h=normalizeHandle(handle);

@@ -1,22 +1,47 @@
 {
   "name": "recruiting-os",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Evidence-first recruiting intelligence for fragmented campus club recruiting.",
   "type": "commonjs",
   "scripts": {
-    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test dist/tests/*.test.js",
-    "start": "node --experimental-sqlite dist/src/server.js",
+    "test:unit": "node --test dist/tests/*.test.js",
+    "lint": "eslint src tests scripts",
+    "format:check": "prettier --check .",
+    "format": "prettier --write .",
+    "audit": "npm audit --audit-level=high",
+    "start": "node --experimental-sqlite dist/src/bootstrap/api.js",
+    "worker": "node --experimental-sqlite dist/src/bootstrap/worker.js",
+    "migrate": "node dist/src/infrastructure/database/postgres/migrate.js",
     "dev": "npm run build && npm start",
     "demo:180dc": "node --experimental-sqlite dist/scripts/demo-180dc.js",
-    "check": "npm test"
+    "check": "npm run typecheck && npm run lint && npm test && npm run audit"
   },
   "engines": {
-    "node": ">=22.5"
+    "node": ">=22.12 <23"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@types/node": "^22.0.0",
-    "typescript": "^5.8.0"
+    "@types/pg": "^8.23.1",
+    "eslint": "^9.39.5",
+    "prettier": "^3.9.6",
+    "typescript": "^5.8.0",
+    "typescript-eslint": "^8.68.0"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.1.2",
+    "@fastify/cors": "^11.3.0",
+    "@fastify/helmet": "^13.1.1",
+    "fastify": "^5.12.1",
+    "jose": "^6.2.10",
+    "pg": "^8.23.0",
+    "pino": "^9.14.0",
+    "undici": "^7.29.0",
+    "zod": "^4.4.3"
   }
 }
