@@ -11,7 +11,7 @@ import { EncryptedCredentialVault } from '../src/infrastructure/credentials/encr
 import { SqliteCredentialRepository } from '../src/infrastructure/credentials/sqlite-credential-repository';
 import { ProviderOAuthService } from '../src/infrastructure/auth/provider-oauth-service';
 
-async function fixture() {
+async function fixture(overrides: NodeJS.ProcessEnv = {}) {
   const config = loadConfig({
     NODE_ENV: 'test',
     AUTH_MODE: 'development',
@@ -19,6 +19,7 @@ async function fixture() {
     OIDC_ALLOWED_EMAIL_DOMAIN: 'unc.edu',
     SESSION_SECRET: 'x'.repeat(32),
     LOG_LEVEL: 'silent',
+    ...overrides,
   });
   const store = new Store(':memory:', 'unc');
   const auth = new SqliteAuthRepository(store);
@@ -47,11 +48,11 @@ async function fixture() {
   return { app, store, credentialVault };
 }
 
-async function login(app: Awaited<ReturnType<typeof buildApp>>) {
+async function login(app: Awaited<ReturnType<typeof buildApp>>, email = 'student@unc.edu') {
   const response = await app.inject({
     method: 'POST',
     url: '/auth/development',
-    payload: { email: 'student@unc.edu', displayName: 'Student' },
+    payload: { email, displayName: 'Student' },
   });
   assert.equal(response.statusCode, 200, response.body);
   const csrf = (response.json() as { csrfToken: string }).csrfToken;
@@ -78,6 +79,38 @@ test('local same-origin browser requests are accepted while foreign origins are 
   });
   assert.equal(rejected.statusCode, 403);
   assert.equal(rejected.json().error.code, 'ORIGIN_NOT_ALLOWED');
+  await app.close();
+  await store.close();
+});
+
+test('authenticated users behind one NAT are limited per user, not by the anonymous IP ceiling', async () => {
+  const { app, store } = await fixture({
+    RATE_LIMIT_PER_MINUTE: '2',
+    AUTH_IP_RATE_LIMIT_PER_MINUTE: '100',
+    AUTHENTICATED_IP_RATE_LIMIT_PER_MINUTE: '100',
+  });
+  const first = await login(app, 'first@unc.edu');
+  const second = await login(app, 'second@unc.edu');
+  assert.equal(
+    (await app.inject({ url: '/api/dashboard', headers: { cookie: first.cookie } })).statusCode,
+    200,
+  );
+  assert.equal(
+    (await app.inject({ url: '/api/dashboard', headers: { cookie: second.cookie } })).statusCode,
+    200,
+  );
+  assert.equal((await app.inject({ url: '/health/live' })).statusCode, 200);
+  assert.equal((await app.inject({ url: '/health/live' })).statusCode, 200);
+  assert.equal((await app.inject({ url: '/health/live' })).statusCode, 429);
+  await app.close();
+  await store.close();
+});
+
+test('anonymous protected-route probes remain IP-rate-limited', async () => {
+  const { app, store } = await fixture({ RATE_LIMIT_PER_MINUTE: '2' });
+  assert.equal((await app.inject({ url: '/api/dashboard' })).statusCode, 401);
+  assert.equal((await app.inject({ url: '/api/dashboard' })).statusCode, 401);
+  assert.equal((await app.inject({ url: '/api/dashboard' })).statusCode, 429);
   await app.close();
   await store.close();
 });

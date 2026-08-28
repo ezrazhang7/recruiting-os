@@ -28,6 +28,13 @@ const schema = z.object({
   MAX_SCREENSHOT_BYTES: z.coerce.number().int().min(1_024).max(20_000_000).default(5_000_000),
   MAX_FETCH_BYTES: z.coerce.number().int().min(1_024).max(20_000_000).default(2_000_000),
   RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10_000).default(120),
+  AUTH_IP_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(10).max(100_000).default(2_000),
+  AUTHENTICATED_IP_RATE_LIMIT_PER_MINUTE: z.coerce
+    .number()
+    .int()
+    .min(100)
+    .max(1_000_000)
+    .default(30_000),
   CONNECTOR_SYNC_INTERVAL_SECONDS: z.coerce.number().int().min(300).max(86_400).default(900),
   TRUST_PROXY: booleanFromString.default(false),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
@@ -108,6 +115,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
       screenshotBytes: value.MAX_SCREENSHOT_BYTES,
       fetchBytes: value.MAX_FETCH_BYTES,
       requestsPerMinute: value.RATE_LIMIT_PER_MINUTE,
+      authIpRequestsPerMinute: value.AUTH_IP_RATE_LIMIT_PER_MINUTE,
+      authenticatedIpRequestsPerMinute: value.AUTHENTICATED_IP_RATE_LIMIT_PER_MINUTE,
       connectorSyncIntervalSeconds: value.CONNECTOR_SYNC_INTERVAL_SECONDS,
     },
     trustProxy: value.TRUST_PROXY,

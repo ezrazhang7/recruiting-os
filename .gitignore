@@ -6,4 +6,5 @@ node_modules/
 dist/
 coverage/
 *.log
+load-test-sessions*.json
 .DS_Store

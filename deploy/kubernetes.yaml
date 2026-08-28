@@ -12,6 +12,8 @@ data:
   DEFAULT_TENANT_ID: unc
   TRUST_PROXY: 'true'
   LOG_LEVEL: info
+  AUTH_IP_RATE_LIMIT_PER_MINUTE: '2000'
+  AUTHENTICATED_IP_RATE_LIMIT_PER_MINUTE: '30000'
 ---
 apiVersion: apps/v1
 kind: Deployment

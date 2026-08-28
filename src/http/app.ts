@@ -1,7 +1,7 @@
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import { ZodError } from 'zod';
 import { AppError, AuthenticationError, RateLimitError } from '../domain/errors';
 import { MetricsRegistry } from '../infrastructure/observability/metrics';
@@ -21,10 +21,8 @@ const publicPaths = new Set([
   '/favicon.ico',
   '/health/live',
   '/health/ready',
-  '/auth/login',
-  '/auth/callback',
-  '/auth/development',
 ]);
+const authenticationPaths = new Set(['/auth/login', '/auth/callback', '/auth/development']);
 const unsafeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 export async function buildApp(dependencies: AppDependencies): Promise<FastifyInstance> {
@@ -79,29 +77,68 @@ export async function buildApp(dependencies: AppDependencies): Promise<FastifyIn
 
   app.addHook('onRequest', async (request, reply) => {
     const path = request.url.split('?')[0] ?? request.url;
-    const rate = await rateLimiter.consume(
-      `ip:${request.ip}`,
-      config.limits.requestsPerMinute,
+    const isAuthentication =
+      authenticationPaths.has(path) ||
+      (request.method === 'GET' && /^\/api\/connectors\/[^/]+\/callback$/.test(path));
+    if (isAuthentication) {
+      const authenticationRate = await rateLimiter.consume(
+        `authentication-ip:${request.ip}`,
+        config.limits.authIpRequestsPerMinute,
+        60_000,
+      );
+      setRateLimitHeaders(reply, authenticationRate);
+      if (!authenticationRate.allowed) throw new RateLimitError();
+      return;
+    }
+    const isPublic = publicPaths.has(path) || request.method === 'OPTIONS';
+    if (isPublic) {
+      const publicRate = await rateLimiter.consume(
+        `anonymous-ip:${request.ip}`,
+        config.limits.requestsPerMinute,
+        60_000,
+      );
+      setRateLimitHeaders(reply, publicRate);
+      if (!publicRate.allowed) throw new RateLimitError();
+      return;
+    }
+    const presentedSession = request.cookies[sessionCookie];
+    if (!presentedSession) {
+      const anonymousRate = await rateLimiter.consume(
+        `anonymous-ip:${request.ip}`,
+        config.limits.requestsPerMinute,
+        60_000,
+      );
+      setRateLimitHeaders(reply, anonymousRate);
+      if (!anonymousRate.allowed) throw new RateLimitError();
+      throw new AuthenticationError();
+    }
+    const authenticatedIpRate = await rateLimiter.consume(
+      `authenticated-ip:${request.ip}`,
+      config.limits.authenticatedIpRequestsPerMinute,
       60_000,
     );
-    reply
-      .header('x-ratelimit-remaining', rate.remaining)
-      .header('x-ratelimit-reset', Math.ceil(rate.resetAt / 1000));
-    if (!rate.allowed) throw new RateLimitError();
-    if (
-      publicPaths.has(path) ||
-      (request.method === 'GET' && /^\/api\/connectors\/[^/]+\/callback$/.test(path)) ||
-      request.method === 'OPTIONS'
-    )
-      return;
-    const authentication = await sessionService.authenticate(request.cookies[sessionCookie]);
-    if (!authentication) throw new AuthenticationError();
+    if (!authenticatedIpRate.allowed) {
+      setRateLimitHeaders(reply, authenticatedIpRate);
+      throw new RateLimitError();
+    }
+    const authentication = await sessionService.authenticate(presentedSession);
+    if (!authentication) {
+      const anonymousRate = await rateLimiter.consume(
+        `anonymous-ip:${request.ip}`,
+        config.limits.requestsPerMinute,
+        60_000,
+      );
+      setRateLimitHeaders(reply, anonymousRate);
+      if (!anonymousRate.allowed) throw new RateLimitError();
+      throw new AuthenticationError();
+    }
     request.authentication = authentication;
     const userRate = await rateLimiter.consume(
       `user:${authentication.principal.tenantId}:${authentication.principal.userId}`,
       config.limits.requestsPerMinute,
       60_000,
     );
+    setRateLimitHeaders(reply, userRate);
     if (!userRate.allowed) throw new RateLimitError();
     if (unsafeMethods.has(request.method)) {
       const token = headerString(request.headers['x-csrf-token']);
@@ -140,4 +177,13 @@ export async function buildApp(dependencies: AppDependencies): Promise<FastifyIn
   registerConnectorRoutes(app, runtimeDependencies, sessionCookie);
   registerRecruitingRoutes(app, runtimeDependencies);
   return app;
+}
+
+function setRateLimitHeaders(
+  reply: FastifyReply,
+  rate: { remaining: number; resetAt: number },
+): void {
+  reply
+    .header('x-ratelimit-remaining', rate.remaining)
+    .header('x-ratelimit-reset', Math.ceil(rate.resetAt / 1000));
 }

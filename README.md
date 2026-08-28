@@ -71,6 +71,10 @@ TEST_DATABASE_URL=postgresql://... npm run test:postgres
 
 CI repeats these checks on Node 22 and a real Postgres 16 service, proves RLS cross-tenant isolation, checks shared rate-limit atomicity, and scans the Git history for secrets. Provider contract tests use injected transports; live-provider and production load gates must run in a controlled staging account before release.
 
+The production load harness requires 1,000 distinct short-lived sessions and exercises mixed
+dashboard/ingestion traffic. See [the load-test gate](docs/LOAD_TEST.md); never commit its session
+fixture.
+
 ## API surface
 
 Public routes are limited to the UI assets, liveness/readiness, and OIDC/development-auth entry points. Authenticated routes cover the student dashboard, organizations, connector OAuth/status/revoke/sync, bounded ingestion queueing, admin evidence, reviewed opportunity overrides, and protected metrics. Mutations require CSRF and idempotent queue jobs.
